@@ -24,15 +24,15 @@ type Store struct {
 	writer *Writer
 }
 
-func NewStore(conf *config.Configuration, logger *zap.Logger) (*Store, error) {
+func NewStore(conf *config.Configuration, logger *zap.Logger) (*Store, func() error, error) {
 	orgID, err := findOrgID(context.TODO(), conf.Host, conf.Token, conf.Organization)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	bucketID, err := findBucketID(context.TODO(), conf.Host, conf.Token, orgID, conf.Bucket)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	fluxService := &influx2http.FluxService{
@@ -48,10 +48,12 @@ func NewStore(conf *config.Configuration, logger *zap.Logger) (*Store, error) {
 	}
 	writer := NewWriter(writeService, orgID, bucketID, common.DefaultSpanMeasurement, common.DefaultLogMeasurement, logger)
 
-	return &Store{
+	store := &Store{
 		reader: reader,
 		writer: writer,
-	}, nil
+	}
+
+	return store, store.Close, nil
 }
 
 func (s *Store) Close() error {

@@ -25,10 +25,10 @@ type Store struct {
 	writer *Writer
 }
 
-func NewStore(conf *config.Configuration, logger *zap.Logger) (*Store, error) {
+func NewStore(conf *config.Configuration, logger *zap.Logger) (*Store, func() error, error) {
 	u, err := url.ParseRequestURI(conf.Host)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	clientConfig := client.Config{
@@ -42,17 +42,17 @@ func NewStore(conf *config.Configuration, logger *zap.Logger) (*Store, error) {
 
 	influxClient, err := client.NewClient(clientConfig)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	reader := NewReader(influxClient, conf.Database, conf.RetentionPolicy, common.DefaultSpanMeasurement, common.DefaultLogMeasurement, conf.DefaultLookback, logger)
-
 	writer := NewWriter(influxClient, conf.Database, conf.RetentionPolicy, common.DefaultSpanMeasurement, common.DefaultLogMeasurement, logger)
-
-	return &Store{
+	store := &Store{
 		reader: reader,
 		writer: writer,
-	}, nil
+	}
+
+	return store, store.Close, nil
 }
 
 func (s *Store) Close() error {

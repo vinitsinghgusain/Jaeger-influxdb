@@ -1,4 +1,4 @@
-package jaeger_influxdb
+package main
 
 import (
 	"errors"
@@ -42,10 +42,11 @@ func main() {
 	}
 
 	var store shared.StoragePlugin
+	var close func() error
 	if conf.Database != "" && conf.RetentionPolicy != "" {
-		store, err = storev1.NewStore(conf, logger)
+		store, close, err = storev1.NewStore(conf, logger)
 	} else if conf.Organization != "" && conf.Bucket != "" && conf.Token != "" {
-		store, err = storev2.NewStore(conf, logger)
+		store, close, err = storev2.NewStore(conf, logger)
 	} else {
 		err = errors.New("missing flags; for InfluxDB V1 set database and retention policy; for InfluxDB V2 set organization, bucket and token")
 	}
@@ -58,4 +59,11 @@ func main() {
 	}
 
 	grpc.Serve(store)
+
+	if err = close(); err != nil {
+		if _, outerErr := fmt.Fprintln(os.Stderr, err); outerErr != nil {
+			panic(outerErr)
+		}
+		os.Exit(1)
+	}
 }
