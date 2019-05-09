@@ -13,7 +13,7 @@ The plugin uses `go/mod` to manage its dependencies.
 In order to compile the plugin you can use `go build`:
 
 ```
-GO111MODULE=on go run -o ./jaeger-store ./cmd
+GO111MODULE=on go run -o ./cmd/jaeger-influxdb ./cmd
 ```
 
 ## How it works
@@ -23,7 +23,7 @@ you can use the `all-in-on`).
 
 ```
 SPAN_STORAGE_TYPE=grpc-plugin ./cmd/all-in-one/all-in-one-linux \
-    --grpc-storage-plugin.binary ./path/jaeger-store/binary
+    --grpc-storage-plugin.binary ./path/to/jaeger-influxdb
 ```
 
 The binary supports a YAML config file. It can be passed adding the flag
