@@ -1,9 +1,7 @@
 package main
 
 import (
-	"errors"
-	"fmt"
-	"os"
+	"flag"
 	"path"
 	"strings"
 
@@ -12,7 +10,7 @@ import (
 	"github.com/influxdata/jaeger-store/storev2"
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc/shared"
-	"github.com/spf13/pflag"
+	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
@@ -20,12 +18,19 @@ import (
 var configPath string
 
 func main() {
-	conf := new(config.Configuration)
+	logger, err := zap.NewDevelopment()
+	if err != nil {
+		panic(err)
+	}
 
-	flagSet := pflag.NewFlagSet("jaeger-influxdb", pflag.ExitOnError)
-	flagSet.StringVar(&configPath, "config", "", "A path to the plugin's configuration file")
-	conf.AddFlags(flagSet)
-	pflag.Parse()
+	if err := run(logger); err != nil {
+		logger.Fatal(err.Error())
+	}
+}
+
+func run(logger *zap.Logger) error {
+	flag.StringVar(&configPath, "config", "", "A path to the InfluxDB plugin's configuration file")
+	flag.Parse()
 
 	if configPath != "" {
 		viper.SetConfigFile(path.Base(configPath))
@@ -36,34 +41,29 @@ func main() {
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
 
-	logger, err := zap.NewProduction()
-	if err != nil {
-		panic(err)
-	}
+	conf := new(config.Configuration)
+	conf.InitFromViper(v)
 
 	var store shared.StoragePlugin
-	var close func() error
+	var closeStore func() error
+	var err error
+
 	if conf.Database != "" && conf.RetentionPolicy != "" {
-		store, close, err = storev1.NewStore(conf, logger)
+		store, closeStore, err = storev1.NewStore(conf, logger)
 	} else if conf.Organization != "" && conf.Bucket != "" && conf.Token != "" {
-		store, close, err = storev2.NewStore(conf, logger)
+		store, closeStore, err = storev2.NewStore(conf, logger)
 	} else {
 		err = errors.New("missing flags; for InfluxDB V1 set database and retention policy; for InfluxDB V2 set organization, bucket and token")
 	}
 
 	if err != nil {
-		if _, outerErr := fmt.Fprintln(os.Stderr, err); outerErr != nil {
-			panic(outerErr)
-		}
-		os.Exit(1)
+		return errors.WithMessage(err, "failed to open store")
 	}
 
 	grpc.Serve(store)
 
-	if err = close(); err != nil {
-		if _, outerErr := fmt.Fprintln(os.Stderr, err); outerErr != nil {
-			panic(outerErr)
-		}
-		os.Exit(1)
+	if err = closeStore(); err != nil {
+		return errors.WithMessage(err, "failed to close store")
 	}
+	return nil
 }

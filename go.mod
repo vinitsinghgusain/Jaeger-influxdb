@@ -14,7 +14,6 @@ require (
 	github.com/jaegertracing/jaeger v1.11.1-0.20190505210250-7ae02d435b4e
 	github.com/opentracing/opentracing-go v1.1.0 // indirect
 	github.com/pkg/errors v0.8.1
-	github.com/spf13/pflag v1.0.3
 	github.com/spf13/viper v1.3.2
 	github.com/uber/jaeger-lib v2.0.0+incompatible // indirect
 	go.uber.org/atomic v1.4.0 // indirect

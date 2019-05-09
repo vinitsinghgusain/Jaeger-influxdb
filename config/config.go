@@ -3,7 +3,6 @@ package config
 import (
 	"time"
 
-	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
@@ -22,8 +21,6 @@ const (
 	flagToken        = "influxdb.token" // #nosec
 	flagOrganization = "influxdb.organization"
 	flagBucket       = "influxdb.bucket"
-
-	defaultDefaultLookback = -168 * time.Hour
 )
 
 // Configuration describes the options to customize the storage behavior
@@ -42,22 +39,6 @@ type Configuration struct {
 	Token        string `yaml:"token"`
 	Organization string `yaml:"organization"`
 	Bucket       string `yaml:"bucket"`
-}
-
-// AddFlags from this storage to the CLI
-func (c *Configuration) AddFlags(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(&c.Host, flagHost, "", "InfluxDB host, eg http://localhost:8086 or http://localhost:9999")
-	flagSet.DurationVar(&c.DefaultLookback, flagDefaultLookback, defaultDefaultLookback, "Lookback window for queries that do not specify lookback as parameter")
-
-	flagSet.StringVar(&c.Database, flagDatabase, "", "InfluxDB database (v1.x only)")
-	flagSet.StringVar(&c.RetentionPolicy, flagRetentionPolicy, "", "InfluxDB database (v1.x only)")
-	flagSet.StringVar(&c.Username, flagUsername, "", "InfluxDB username (v1.x only)")
-	flagSet.StringVar(&c.Password, flagPassword, "", "InfluxDB password (v1.x only)")
-	flagSet.BoolVar(&c.UnsafeSsl, flagUnsafeSsl, false, "InfluxDB unsafe ssl (v1.x only)")
-
-	flagSet.StringVar(&c.Token, flagToken, "", "InfluxDB token (v2.x only)")
-	flagSet.StringVar(&c.Organization, flagOrganization, "", "InfluxDB organization (v2.x only)")
-	flagSet.StringVar(&c.Bucket, flagBucket, "", "InfluxDB bucket (v2.x only)")
 }
 
 // InitFromViper initializes the options struct with values from Viper
