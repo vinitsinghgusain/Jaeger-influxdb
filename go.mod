@@ -3,6 +3,7 @@ module github.com/influxdata/jaeger-store
 go 1.12
 
 require (
+	github.com/davecgh/go-spew v1.1.1
 	github.com/gogo/googleapis v1.2.0 // indirect
 	github.com/golang/protobuf v1.3.1 // indirect
 	github.com/hashicorp/go-hclog v0.9.0 // indirect

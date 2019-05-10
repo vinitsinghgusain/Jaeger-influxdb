@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"path"
-	"strings"
 
 	"github.com/influxdata/jaeger-store/config"
 	"github.com/influxdata/jaeger-store/storev1"
@@ -23,47 +22,41 @@ func main() {
 		panic(err)
 	}
 
-	if err := run(logger); err != nil {
-		logger.Fatal(err.Error())
-	}
-}
-
-func run(logger *zap.Logger) error {
-	flag.StringVar(&configPath, "config", "", "A path to the InfluxDB plugin's configuration file")
+	flag.StringVar(&configPath, "config", "", "The absolute path to the InfluxDB plugin's configuration file")
 	flag.Parse()
 
-	if configPath != "" {
-		viper.SetConfigFile(path.Base(configPath))
-		viper.AddConfigPath(path.Dir(configPath))
-	}
-
 	v := viper.New()
-	v.AutomaticEnv()
-	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
-
-	conf := new(config.Configuration)
+	if configPath != "" {
+		v.SetConfigFile(path.Base(configPath))
+		v.AddConfigPath(path.Dir(configPath))
+	}
+	err = v.ReadInConfig()
+	if err != nil {
+		logger.Fatal(errors.WithMessage(err, "failed to parse configuration file").Error())
+	}
+	conf := config.Configuration{}
 	conf.InitFromViper(v)
 
 	var store shared.StoragePlugin
 	var closeStore func() error
-	var err error
 
-	if conf.Database != "" && conf.RetentionPolicy != "" {
-		store, closeStore, err = storev1.NewStore(conf, logger)
+	if conf.Database != "" {
+		logger.Info("Started with InfluxDB v1")
+		store, closeStore, err = storev1.NewStore(&conf, logger)
 	} else if conf.Organization != "" && conf.Bucket != "" && conf.Token != "" {
-		store, closeStore, err = storev2.NewStore(conf, logger)
+		logger.Info("Started with InfluxDB v2")
+		store, closeStore, err = storev2.NewStore(&conf, logger)
 	} else {
 		err = errors.New("missing flags; for InfluxDB V1 set database and retention policy; for InfluxDB V2 set organization, bucket and token")
 	}
 
 	if err != nil {
-		return errors.WithMessage(err, "failed to open store")
+		logger.Fatal(errors.WithMessage(err, "failed to open store").Error())
 	}
 
 	grpc.Serve(store)
 
 	if err = closeStore(); err != nil {
-		return errors.WithMessage(err, "failed to close store")
+		logger.Fatal(errors.WithMessage(err, "failed to close store").Error())
 	}
-	return nil
 }
