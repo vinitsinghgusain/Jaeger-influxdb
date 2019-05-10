@@ -7,16 +7,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/flux"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/pkg/multierror"
 	"github.com/pkg/errors"
-	"go.uber.org/zap"
 )
 
 // spanLogFromFluxColReader converts a Flux column reader (query response "row") to a Jaeger span log
-func spanLogFromFluxColReader(reader flux.ColReader, rowI int, logger *zap.Logger) (*model.Log, model.TraceID, model.SpanID, error) {
+func spanLogFromFluxColReader(reader flux.ColReader, rowI int, logger hclog.Logger) (*model.Log, model.TraceID, model.SpanID, error) {
 	var log model.Log
 	var traceID model.TraceID
 	var spanID model.SpanID
@@ -84,7 +84,7 @@ func spanLogFromFluxColReader(reader flux.ColReader, rowI int, logger *zap.Logge
 				kv.VType = model.ValueType_INT64
 				kv.VInt64 = int64(time.Unix(0, reader.Times(colI).Value(rowI)).Nanosecond())
 			default:
-				logger.Info("skipping span log field with unrecognized type", zap.String("key", col.Label))
+				logger.Warn("skipping span log field with unrecognized type", "key", col.Label)
 				continue
 			}
 			log.Fields = append(log.Fields, kv)
@@ -261,7 +261,7 @@ func traceFromFluxTable(table flux.Table) (*model.Trace, error) {
 }
 
 // TracesFromFluxResult converts a flux Result to Jaeger traces.
-func TracesFromFluxResult(result flux.Result, spanMeasurement, logMeasurement string, logger *zap.Logger) ([]*model.Trace, error) {
+func TracesFromFluxResult(result flux.Result, spanMeasurement, logMeasurement string, logger hclog.Logger) ([]*model.Trace, error) {
 	var traces []*model.Trace
 	logsByTraceIDSpanID := make(map[model.TraceID]map[model.SpanID][]model.Log)
 
@@ -314,7 +314,7 @@ func TracesFromFluxResult(result flux.Result, spanMeasurement, logMeasurement st
 	return traces, nil
 }
 
-func logsFromFluxTable(table flux.Table, logger *zap.Logger) (map[model.SpanID][]model.Log, error) {
+func logsFromFluxTable(table flux.Table, logger hclog.Logger) (map[model.SpanID][]model.Log, error) {
 	logsBySpanID := make(map[model.SpanID][]model.Log)
 	var err error
 
@@ -322,7 +322,7 @@ func logsFromFluxTable(table flux.Table, logger *zap.Logger) (map[model.SpanID][
 		for rowI := 0; rowI < reader.Len(); rowI++ {
 			spanLog, _, spanID, err := spanLogFromFluxColReader(reader, rowI, logger)
 			if err != nil {
-				logger.Info("failed to get span log from flux result", zap.Error(err))
+				logger.Warn("failed to get span log from flux result", "error", err)
 				continue
 			}
 			logsBySpanID[spanID] = append(logsBySpanID[spanID], *spanLog)

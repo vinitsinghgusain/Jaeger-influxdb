@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/influxdb1-client/models"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/jaegertracing/jaeger/model"
-	"go.uber.org/zap"
 )
 
 // SpanToPointsV1 converts a Jaeger span to InfluxDB v1.x points.
 // One point for the span itself, and one point for each log entry on the span.
-func SpanToPointsV1(span *model.Span, spanMeasurement, logMeasurement string, logger *zap.Logger) ([]models.Point, error) {
+func SpanToPointsV1(span *model.Span, spanMeasurement, logMeasurement string, logger hclog.Logger) ([]models.Point, error) {
 	var tags models.Tags
 
 	tags.SetString(common.TraceIDKey, span.TraceID.String())
@@ -22,9 +22,8 @@ func SpanToPointsV1(span *model.Span, spanMeasurement, logMeasurement string, lo
 	for _, tag := range append(span.Tags, span.Process.Tags...) {
 		key, value, err := keyValueAsStrings(&tag)
 		if err != nil {
-			logger.Info(err.Error(),
-				zap.String("skipped-key-and-type",
-					fmt.Sprintf("%s:%s", tag.Key, tag.VType.String())))
+			logger.Warn(err.Error(),
+				"skipped-key-and-type", fmt.Sprintf("%s:%s", tag.Key, tag.VType.String()))
 			continue
 		}
 
@@ -60,9 +59,8 @@ func SpanToPointsV1(span *model.Span, spanMeasurement, logMeasurement string, lo
 		case model.SpanRefType_FOLLOWS_FROM:
 			referenceType = common.ReferenceTypeFollowsFrom
 		default:
-			logger.Info("skipped unrecognized span reference type",
-				zap.String("skipped-spanref-id-and-type",
-					fmt.Sprintf("%s:%s", spanRef.SpanID.String(), spanRef.RefType.String())))
+			logger.Warn("skipped unrecognized span reference type",
+				"skipped-spanref-id-and-type", fmt.Sprintf("%s:%s", spanRef.SpanID.String(), spanRef.RefType.String()))
 			continue
 		}
 		references = append(references, fmt.Sprintf("%s:%s", spanRef.SpanID.String(), referenceType))
@@ -92,18 +90,18 @@ func SpanToPointsV1(span *model.Span, spanMeasurement, logMeasurement string, lo
 				spanField := &spanLog.Fields[j]
 				key, value, err := keyValueAsStringAndInterface(spanField)
 				if err != nil {
-					logger.Info("skipping span log field",
-						zap.String(common.TraceIDKey, span.TraceID.String()),
-						zap.String(common.SpanIDKey, span.SpanID.String()),
-						zap.String("field-key", spanField.Key),
-						zap.Error(err))
+					logger.Warn("skipping span log field",
+						common.TraceIDKey, span.TraceID.String(),
+						common.SpanIDKey, span.SpanID.String(),
+						"field-key", spanField.Key,
+						"error", err)
 					continue
 				}
 				if key == common.TraceIDKey || key == common.SpanIDKey {
-					logger.Info("skipping span log field because field key is reserved",
-						zap.String(common.TraceIDKey, span.TraceID.String()),
-						zap.String(common.SpanIDKey, span.SpanID.String()),
-						zap.String("field-key", spanField.Key))
+					logger.Warn("skipping span log field because field key is reserved",
+						common.TraceIDKey, span.TraceID.String(),
+						common.SpanIDKey, span.SpanID.String(),
+						"field-key", spanField.Key)
 					continue
 				}
 				fields[key] = value
@@ -111,7 +109,7 @@ func SpanToPointsV1(span *model.Span, spanMeasurement, logMeasurement string, lo
 
 			point, err := models.NewPoint(logMeasurement, tags, fields, spanLog.Timestamp)
 			if err != nil {
-				logger.Info("skipping span log", zap.String(common.SpanIDKey, span.SpanID.String()))
+				logger.Warn("skipping span log", common.SpanIDKey, span.SpanID.String())
 				continue
 			}
 			points = append(points, point)

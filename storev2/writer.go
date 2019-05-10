@@ -7,13 +7,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/influxdb"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/influxdata/jaeger-influxdb/dbmodel"
 	"github.com/influxdata/jaeger-influxdb/influx2http"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
-	"go.uber.org/zap"
 )
 
 var _ spanstore.Writer = (*Writer)(nil)
@@ -30,11 +30,11 @@ type Writer struct {
 	writeCh chan string
 	writeWG sync.WaitGroup
 
-	logger *zap.Logger
+	logger hclog.Logger
 }
 
 // NewWriter returns a Writer for InfluxDB v2.x
-func NewWriter(writeService *influx2http.WriteService, orgID, bucketID influxdb.ID, spanMeasurement, logMeasurement string, logger *zap.Logger) *Writer {
+func NewWriter(writeService *influx2http.WriteService, orgID, bucketID influxdb.ID, spanMeasurement, logMeasurement string, logger hclog.Logger) *Writer {
 	w := &Writer{
 		writeService:    writeService,
 		orgID:           orgID,
@@ -119,8 +119,8 @@ func (w *Writer) writeBatch(batch []string) {
 
 	err := w.writeService.Write(context.TODO(), w.orgID, w.bucketID, buf)
 	if err != nil {
-		w.logger.Warn("failed to write batch", zap.Error(err))
+		w.logger.Warn("failed to write batch", "error", err)
 		return
 	}
-	w.logger.Debug("wrote points to InfluxDB", zap.Int("quantity", len(batch)))
+	w.logger.Warn("wrote points to InfluxDB", "quantity", len(batch))
 }

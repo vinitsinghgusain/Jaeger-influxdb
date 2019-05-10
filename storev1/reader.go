@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/influxdb1-client"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/influxdata/jaeger-influxdb/dbmodel"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
-	"go.uber.org/zap"
 )
 
 var _ spanstore.Reader = (*Reader)(nil)
@@ -25,11 +25,11 @@ type Reader struct {
 	logMeasurement  string
 	defaultLookback time.Duration
 
-	logger *zap.Logger
+	logger hclog.Logger
 }
 
 // NewReader returns a new SpanReader for InfluxDB v1.x.
-func NewReader(client *client.Client, database, retentionPolicy, spanMeasurement, logMeasurement string, defaultLookback time.Duration, logger *zap.Logger) *Reader {
+func NewReader(client *client.Client, database, retentionPolicy, spanMeasurement, logMeasurement string, defaultLookback time.Duration, logger hclog.Logger) *Reader {
 	return &Reader{
 		client:          client,
 		database:        database,

@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/csv"
 	"github.com/influxdata/influxdb"
@@ -15,7 +16,6 @@ import (
 	"github.com/influxdata/jaeger-influxdb/influx2http"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
-	"go.uber.org/zap"
 )
 
 var _ spanstore.Reader = (*Reader)(nil)
@@ -31,11 +31,11 @@ type Reader struct {
 
 	resultDecoder *csv.ResultDecoder
 
-	logger *zap.Logger
+	logger hclog.Logger
 }
 
 // NewReader returns a new SpanReader for InfluxDB v2.x.
-func NewReader(fluxService *influx2http.FluxService, orgID influxdb.ID, bucket, spanMeasurement, logMeasurement string, defaultLookback time.Duration, logger *zap.Logger) *Reader {
+func NewReader(fluxService *influx2http.FluxService, orgID influxdb.ID, bucket, spanMeasurement, logMeasurement string, defaultLookback time.Duration, logger hclog.Logger) *Reader {
 	return &Reader{
 		resultDecoder:   csv.NewResultDecoder(csv.ResultDecoderConfig{}),
 		fluxService:     fluxService,

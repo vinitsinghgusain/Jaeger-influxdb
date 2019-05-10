@@ -6,13 +6,13 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/influxdb1-client"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/influxdata/jaeger-influxdb/config"
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc/shared"
 	"github.com/jaegertracing/jaeger/storage/dependencystore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
-	"go.uber.org/zap"
 )
 
 var (
@@ -25,7 +25,7 @@ type Store struct {
 	writer *Writer
 }
 
-func NewStore(conf *config.Configuration, logger *zap.Logger) (*Store, func() error, error) {
+func NewStore(conf *config.Configuration, logger hclog.Logger) (*Store, func() error, error) {
 	u, err := url.ParseRequestURI(conf.Host)
 	if err != nil {
 		return nil, nil, err

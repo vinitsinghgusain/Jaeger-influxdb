@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/execute"
 	"github.com/influxdata/flux/execute/executetest"
@@ -17,7 +18,6 @@ import (
 	"github.com/influxdata/jaeger-influxdb/dbmodel"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/model/converter/json"
-	"go.uber.org/zap"
 )
 
 const (
@@ -335,14 +335,14 @@ var (
 )
 
 func TestSpanToPointV2(t *testing.T) {
-	gotPointsA, err := dbmodel.SpanToPointsV2(&spanA, spanMeasurement, logMeasurement, zap.NewNop())
+	gotPointsA, err := dbmodel.SpanToPointsV2(&spanA, spanMeasurement, logMeasurement, hclog.NewNullLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	requirePointssEqual(t, pointsA, gotPointsA, "points are not equal")
 
-	gotPointsB, err := dbmodel.SpanToPointsV2(&spanB, spanMeasurement, logMeasurement, zap.NewNop())
+	gotPointsB, err := dbmodel.SpanToPointsV2(&spanB, spanMeasurement, logMeasurement, hclog.NewNullLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func TestSpanFromFlux(t *testing.T) {
 	fluxResult := &executetest.Result{
 		Tbls: []*executetest.Table{&spanTable, &logTable},
 	}
-	traces, err := dbmodel.TracesFromFluxResult(fluxResult, spanMeasurement, logMeasurement, zap.NewNop())
+	traces, err := dbmodel.TracesFromFluxResult(fluxResult, spanMeasurement, logMeasurement, hclog.NewNullLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestSpanToPointV2_invalidReference(t *testing.T) {
 			RefType: model.SpanRefType_CHILD_OF,
 		},
 	}
-	points, err := dbmodel.SpanToPointsV2(&span, spanMeasurement, logMeasurement, zap.NewNop())
+	points, err := dbmodel.SpanToPointsV2(&span, spanMeasurement, logMeasurement, hclog.NewNullLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
