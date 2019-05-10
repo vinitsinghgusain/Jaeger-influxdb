@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"os"
-	"path"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/jaeger-influxdb/config"
@@ -19,22 +18,18 @@ var configPath string
 
 func main() {
 	logger := hclog.New(&hclog.LoggerOptions{
-		Name:            "jaeger-influxdb",
-		Level:           hclog.Warn, // Jaeger only captures >= Warn, so don't bother logging below Warn
-		IncludeLocation: true,
+		Name:  "jaeger-influxdb",
+		Level: hclog.Warn, // Jaeger only captures >= Warn, so don't bother logging below Warn
 	})
 
 	flag.StringVar(&configPath, "config", "", "The absolute path to the InfluxDB plugin's configuration file")
 	flag.Parse()
 
 	v := viper.New()
-	if configPath != "" {
-		v.SetConfigFile(path.Base(configPath))
-		v.AddConfigPath(path.Dir(configPath))
-	}
+	v.SetConfigFile(configPath)
 	err := v.ReadInConfig()
 	if err != nil {
-		logger.Error("failed to parse configuration file")
+		logger.Error("failed to parse configuration file", "error", err)
 		os.Exit(1)
 	}
 	conf := config.Configuration{}
