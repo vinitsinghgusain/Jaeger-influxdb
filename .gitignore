@@ -1,1 +1,2 @@
-jaeger-influxdb
+cmd/jaeger-influxdb/jaeger-influxdb-*
+
