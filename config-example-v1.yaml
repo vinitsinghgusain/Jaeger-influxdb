@@ -1,2 +1,2 @@
-host: localhost:8086
+host: http://localhost:8086
 database: tracing
