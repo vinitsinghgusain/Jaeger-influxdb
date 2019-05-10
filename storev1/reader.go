@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/influxdata/influxdb1-client"
-	"github.com/influxdata/jaeger-store/common"
-	"github.com/influxdata/jaeger-store/dbmodel"
+	"github.com/influxdata/jaeger-influxdb/common"
+	"github.com/influxdata/jaeger-influxdb/dbmodel"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
 	"go.uber.org/zap"

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/influxdata/jaeger-store/common"
+	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/jaegertracing/jaeger/model"
 )
 

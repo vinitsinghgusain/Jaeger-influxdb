@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/influxdata/influxdb1-client"
-	"github.com/influxdata/jaeger-store/common"
-	"github.com/influxdata/jaeger-store/config"
+	"github.com/influxdata/jaeger-influxdb/common"
+	"github.com/influxdata/jaeger-influxdb/config"
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc/shared"
 	"github.com/jaegertracing/jaeger/storage/dependencystore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"

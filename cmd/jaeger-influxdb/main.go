@@ -4,9 +4,9 @@ import (
 	"flag"
 	"path"
 
-	"github.com/influxdata/jaeger-store/config"
-	"github.com/influxdata/jaeger-store/storev1"
-	"github.com/influxdata/jaeger-store/storev2"
+	"github.com/influxdata/jaeger-influxdb/config"
+	"github.com/influxdata/jaeger-influxdb/storev1"
+	"github.com/influxdata/jaeger-influxdb/storev2"
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc/shared"
 	"github.com/pkg/errors"

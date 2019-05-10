@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/influxdata/flux"
-	"github.com/influxdata/jaeger-store/common"
+	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/pkg/multierror"
 	"github.com/pkg/errors"

@@ -10,7 +10,7 @@ import (
 
 	"github.com/influxdata/influxdb1-client"
 	"github.com/influxdata/influxdb1-client/models"
-	"github.com/influxdata/jaeger-store/common"
+	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/pkg/multierror"
 	"github.com/pkg/errors"
