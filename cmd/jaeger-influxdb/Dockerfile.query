@@ -2,7 +2,7 @@ FROM jaegertracing/jaeger-query:latest
 
 ENV SPAN_STORAGE_TYPE grpc-plugin
 ENV GRPC_STORAGE_PLUGIN_BINARY /go/bin/jaeger-influxdb-linux
-ENV GRPC_STORAGE_PLUGIN_CONFIGURATION_FILES /etc/jaeger/influxdb-plugin-config.yaml
+ENV GRPC_STORAGE_PLUGIN_CONFIGURATION_FILE /etc/jaeger/influxdb-plugin-config.yaml
 
 COPY ./cmd/jaeger-influxdb/jaeger-influxdb-linux /go/bin
 COPY ./config-example-v1.yaml /etc/jaeger/influxdb-plugin-config.yaml
