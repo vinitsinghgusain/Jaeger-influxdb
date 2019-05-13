@@ -1,2 +1,2 @@
-host: http://influxdb:8086
-database: tracing
+influxdb.host: http://influxdb:8086
+influxdb.database: tracing

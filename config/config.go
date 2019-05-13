@@ -7,20 +7,22 @@ import (
 )
 
 const (
-	flagHost            = "host"
-	flagDefaultLookback = "default-lookback"
+	influxDBPrefix = "influxdb."
+
+	flagHost            = influxDBPrefix + "host"
+	flagDefaultLookback = influxDBPrefix + "default-lookback"
 
 	// InfluxDB v1.x
-	flagDatabase        = "database"
-	flagRetentionPolicy = "retention-policy"
-	flagUsername        = "username"
-	flagPassword        = "password"
-	flagUnsafeSsl       = "unsafe_ssl"
+	flagDatabase        = influxDBPrefix + "database"
+	flagRetentionPolicy = influxDBPrefix + "retention-policy"
+	flagUsername        = influxDBPrefix + "username"
+	flagPassword        = influxDBPrefix + "password"
+	flagUnsafeSsl       = influxDBPrefix + "unsafe_ssl"
 
 	// InfluxDB v2.x
-	flagToken        = "token" // #nosec
-	flagOrganization = "organization"
-	flagBucket       = "bucket"
+	flagToken        = influxDBPrefix + "token" // #nosec
+	flagOrganization = influxDBPrefix + "organization"
+	flagBucket       = influxDBPrefix + "bucket"
 )
 
 // Configuration describes the options to customize the storage behavior

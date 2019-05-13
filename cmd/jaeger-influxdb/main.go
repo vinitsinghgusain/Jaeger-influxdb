@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"strings"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/jaeger-influxdb/config"
@@ -26,7 +27,10 @@ func main() {
 	flag.Parse()
 
 	v := viper.New()
+	v.AutomaticEnv()
+	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
 	v.SetConfigFile(configPath)
+
 	err := v.ReadInConfig()
 	if err != nil {
 		logger.Error("failed to parse configuration file", "error", err)
