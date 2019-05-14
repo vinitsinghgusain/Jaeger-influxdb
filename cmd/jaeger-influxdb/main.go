@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/go-hclog"
@@ -38,6 +39,12 @@ func main() {
 	}
 	conf := config.Configuration{}
 	conf.InitFromViper(v)
+
+	environ := os.Environ()
+	sort.Strings(environ)
+	for _, env := range environ {
+		logger.Warn(env)
+	}
 
 	var store shared.StoragePlugin
 	var closeStore func() error

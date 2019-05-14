@@ -11,7 +11,7 @@ services:
     environment:
       INFLUXDB_DB: tracing
     ports:
-      - "8086:8086"
+      - "8086:8086" # HTTP service
     networks:
       - net-test
 
@@ -20,10 +20,97 @@ services:
       context: .
       dockerfile: ./cmd/jaeger-influxdb/Dockerfile.all-in-one
     container_name: jaeger-all-in-one
-    entrypoint: /go/bin/all-in-one-linux
     depends_on:
       - influxdb
     ports:
-      - "16686:16686"
+      - "8181:16686" # HTTP UI
+    networks:
+      - net-test
+    command: >
+      /bin/sh -c "
+        while ! nc -z influxdb 8086;
+        do
+          echo waiting for influxdb;
+          sleep 1;
+        done;
+        /go/bin/all-in-one-linux
+      "
+
+  jaeger-collector:
+    build:
+      context: .
+      dockerfile: ./cmd/jaeger-influxdb/Dockerfile.collector
+    container_name: jaeger-collector
+    depends_on:
+      - influxdb
+    ports:
+      - "14267:14267" # TCP, spans from jaeger-agent
+    networks:
+      - net-test
+    command: >
+      /bin/sh -c "
+        while ! nc -z influxdb 8086;
+        do
+          echo waiting for influxdb;
+          sleep 1;
+        done;
+        /go/bin/collector-linux
+      "
+
+  jaeger-query:
+    build:
+      context: .
+      dockerfile: ./cmd/jaeger-influxdb/Dockerfile.query
+    container_name: jaeger-query
+    depends_on:
+      - influxdb
+    ports:
+      - "8182:16686" # HTTP UI
+    networks:
+      - net-test
+    command: >
+      /bin/sh -c "
+        while ! nc -z influxdb 8086;
+        do
+          echo waiting for influxdb;
+          sleep 1;
+        done;
+        /go/bin/query-linux
+      "
+
+  jaeger-agent:
+    build:
+      context: .
+      dockerfile: ./cmd/jaeger-influxdb/Dockerfile.agent
+    container_name: jaeger-agent
+    depends_on:
+      - jaeger-collector
+    environment:
+      REPORTER_TCHANNEL_HOST_PORT: jaeger-collector:14267
+    ports:
+      - "6831:6831" # UDP: spans over thrift
+      - "5778:5778" # HTTP: configs, sampling strategies
+    networks:
+      - net-test
+    command: >
+      /bin/sh -c "
+        while ! nc -z jaeger-collector 14267;
+        do
+          echo waiting for jaeger-collector;
+          sleep 1;
+        done;
+        /go/bin/agent-linux
+      "
+
+  hotrod:
+    image: jaegertracing/example-hotrod:latest
+    container_name: hotrod
+    depends_on:
+      - jaeger-agent
+    environment:
+      JAEGER_AGENT_HOST: jaeger-agent
+      JAEGER_AGENT_PORT: 6831
+    ports:
+      - "8080:8080" # HTTP UI
     networks:
       - net-test
