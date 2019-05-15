@@ -1,6 +1,6 @@
 VERSION?=$(shell git log --pretty=format:'%h' -n 1)
 
-DOCKER_NAMESPACE?=influxdb
+DOCKER_NAMESPACE?=quay.io/influxdb
 DOCKER_TAG?=latest
 
 GOOS?=$(shell go env GOOS)
