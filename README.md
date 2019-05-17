@@ -13,6 +13,13 @@ it you will use the right client.
 
 The plugin uses `go/mod` to manage its dependencies.
 
+## Docker
+We provides three docker images that you can use:
+
+1. [quay.io/influxdb/jaeger-all-in-one-influxdb](https://quay.io/repository/influxdb/jaeger-all-in-one-influxdb)
+2. [quay.io/influxdb/jaeger-collector-influxdb](https://quay.io/repository/influxdb/jaeger-collector-influxdb)
+3. [quay.io/influxdb/jaeger-query-influxdb](https://quay.io/repository/influxdb/jaeger-query-influxdb)
+
 ## Compile
 In order to compile the plugin you can use `go build`:
 
