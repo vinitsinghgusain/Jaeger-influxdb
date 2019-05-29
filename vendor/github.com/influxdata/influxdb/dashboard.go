@@ -122,11 +122,16 @@ func SortDashboards(opts FindOptions, ds []*Dashboard) {
 
 // Cell holds positional information about a cell on dashboard and a reference to a cell.
 type Cell struct {
-	ID ID    `json:"id,omitempty"`
-	X  int32 `json:"x"`
-	Y  int32 `json:"y"`
-	W  int32 `json:"w"`
-	H  int32 `json:"h"`
+	ID ID `json:"id,omitempty"`
+	CellProperty
+}
+
+// CellProperty contains the properties of a cell.
+type CellProperty struct {
+	X int32 `json:"x"`
+	Y int32 `json:"y"`
+	W int32 `json:"w"`
+	H int32 `json:"h"`
 }
 
 // DashboardFilter is a filter for dashboards.
@@ -383,6 +388,18 @@ func UnmarshalViewPropertiesJSON(b []byte) (ViewProperties, error) {
 				return nil, err
 			}
 			vis = hv
+		case "heatmap":
+			var hv HeatmapViewProperties
+			if err := json.Unmarshal(v.B, &hv); err != nil {
+				return nil, err
+			}
+			vis = hv
+		case "scatter":
+			var sv ScatterViewProperties
+			if err := json.Unmarshal(v.B, &sv); err != nil {
+				return nil, err
+			}
+			vis = sv
 		}
 	case "empty":
 		var ev EmptyViewProperties
@@ -454,6 +471,24 @@ func MarshalViewPropertiesJSON(v ViewProperties) ([]byte, error) {
 			Shape: "chronograf-v2",
 
 			HistogramViewProperties: vis,
+		}
+	case HeatmapViewProperties:
+		s = struct {
+			Shape string `json:"shape"`
+			HeatmapViewProperties
+		}{
+			Shape: "chronograf-v2",
+
+			HeatmapViewProperties: vis,
+		}
+	case ScatterViewProperties:
+		s = struct {
+			Shape string `json:"shape"`
+			ScatterViewProperties
+		}{
+			Shape: "chronograf-v2",
+
+			ScatterViewProperties: vis,
 		}
 	case MarkdownViewProperties:
 		s = struct {
@@ -597,6 +632,47 @@ type HistogramViewProperties struct {
 	ShowNoteWhenEmpty bool             `json:"showNoteWhenEmpty"`
 }
 
+// HeatmapViewProperties represents options for heatmap view in Chronograf
+type HeatmapViewProperties struct {
+	Type              string           `json:"type"`
+	Queries           []DashboardQuery `json:"queries"`
+	ViewColors        []string         `json:"colors"`
+	BinSize           int32            `json:"binSize"`
+	XColumn           string           `json:"xColumn"`
+	YColumn           string           `json:"yColumn"`
+	XDomain           []float64        `json:"xDomain,omitEmpty"`
+	YDomain           []float64        `json:"yDomain,omitEmpty"`
+	XAxisLabel        string           `json:"xAxisLabel"`
+	YAxisLabel        string           `json:"yAxisLabel"`
+	XPrefix           string           `json:"xPrefix"`
+	XSuffix           string           `json:"xSuffix"`
+	YPrefix           string           `json:"yPrefix"`
+	YSuffix           string           `json:"ySuffix"`
+	Note              string           `json:"note"`
+	ShowNoteWhenEmpty bool             `json:"showNoteWhenEmpty"`
+}
+
+// ScatterViewProperties represents options for scatter view in Chronograf
+type ScatterViewProperties struct {
+	Type              string           `json:"type"`
+	Queries           []DashboardQuery `json:"queries"`
+	ViewColors        []string         `json:"colors"`
+	FillColumns       []string         `json:"fillColumns"`
+	SymbolColumns     []string         `json:"symbolColumns"`
+	XColumn           string           `json:"xColumn"`
+	YColumn           string           `json:"yColumn"`
+	XDomain           []float64        `json:"xDomain,omitEmpty"`
+	YDomain           []float64        `json:"yDomain,omitEmpty"`
+	XAxisLabel        string           `json:"xAxisLabel"`
+	YAxisLabel        string           `json:"yAxisLabel"`
+	XPrefix           string           `json:"xPrefix"`
+	XSuffix           string           `json:"xSuffix"`
+	YPrefix           string           `json:"yPrefix"`
+	YSuffix           string           `json:"ySuffix"`
+	Note              string           `json:"note"`
+	ShowNoteWhenEmpty bool             `json:"showNoteWhenEmpty"`
+}
+
 // GaugeViewProperties represents options for gauge view in Chronograf
 type GaugeViewProperties struct {
 	Type              string           `json:"type"`
@@ -651,6 +727,8 @@ func (XYViewProperties) viewProperties()             {}
 func (LinePlusSingleStatProperties) viewProperties() {}
 func (SingleStatViewProperties) viewProperties()     {}
 func (HistogramViewProperties) viewProperties()      {}
+func (HeatmapViewProperties) viewProperties()        {}
+func (ScatterViewProperties) viewProperties()        {}
 func (GaugeViewProperties) viewProperties()          {}
 func (TableViewProperties) viewProperties()          {}
 func (MarkdownViewProperties) viewProperties()       {}
@@ -660,6 +738,8 @@ func (v XYViewProperties) GetType() string             { return v.Type }
 func (v LinePlusSingleStatProperties) GetType() string { return v.Type }
 func (v SingleStatViewProperties) GetType() string     { return v.Type }
 func (v HistogramViewProperties) GetType() string      { return v.Type }
+func (v HeatmapViewProperties) GetType() string        { return v.Type }
+func (v ScatterViewProperties) GetType() string        { return v.Type }
 func (v GaugeViewProperties) GetType() string          { return v.Type }
 func (v TableViewProperties) GetType() string          { return v.Type }
 func (v MarkdownViewProperties) GetType() string       { return v.Type }
@@ -686,6 +766,9 @@ type BuilderConfig struct {
 	Functions []struct {
 		Name string `json:"name"`
 	} `json:"functions"`
+	AggregateWindow struct {
+		Period string `json:"period"`
+	} `json:"aggregateWindow"`
 }
 
 // Axis represents the visible extents of a visualization

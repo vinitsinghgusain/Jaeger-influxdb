@@ -122,6 +122,7 @@ github.com/fsnotify/fsnotify v1.4.7 h1:IXs+QLmnXW2CcXuY+8Mzv/fWEsPGWxqefPtCP5CnV
 github.com/fsnotify/fsnotify v1.4.7/go.mod h1:jwhsz4b93w/PPRr/qN1Yymfu8t87LnFCMoQvtojpjFo=
 github.com/getkin/kin-openapi v0.1.1-0.20190103155524-1fa206970bc1 h1:yAI0vNjHMlUVGNcVexWxJ6aII0fsdL7AX23lOPCp8/c=
 github.com/getkin/kin-openapi v0.1.1-0.20190103155524-1fa206970bc1/go.mod h1:Caa63DVZ8oP6UKcnt7IM9kFSXraeqprmrGZDqIdOY00=
+github.com/getkin/kin-openapi v0.2.0/go.mod h1:V1z9xl9oF5Wt7v32ne4FmiF1alpS4dM6mNzoywPOXlk=
 github.com/ghodss/yaml v1.0.0 h1:wQHKEahhL6wmXdzwWG11gIVCkOv05bNOh+Rxn0yngAk=
 github.com/ghodss/yaml v1.0.0/go.mod h1:4dBDuWmgqj2HViK6kFavaiC9ZROes6MMH2rRYeMEF04=
 github.com/gliderlabs/ssh v0.1.1/go.mod h1:U7qILu1NlMHj9FlMhZLlkCdDnU1DBEAqr0aevW3Awn0=
@@ -233,8 +234,12 @@ github.com/inconshreveable/mousetrap v1.0.0 h1:Z8tu5sraLXCXIcARxBp/8cbvlwVa7Z1NH
 github.com/inconshreveable/mousetrap v1.0.0/go.mod h1:PxqpIevigyE2G7u3NXJIT2ANytuPF1OarO4DADm73n8=
 github.com/influxdata/flux v0.28.3 h1:5QMrGYZc4R2tmCFg79/5k1o1dLaPxOBc2xVFwFpb9Mg=
 github.com/influxdata/flux v0.28.3/go.mod h1:nLOr2DG8S2ArvCJKktL3P7s1cBgCQrlH8is1u+k1sR0=
+github.com/influxdata/flux v0.31.1 h1:cdClBTKQg2v6FXr0l11sqUPUB2qM7/ZnLAclN0CxxAs=
+github.com/influxdata/flux v0.31.1/go.mod h1:nLOr2DG8S2ArvCJKktL3P7s1cBgCQrlH8is1u+k1sR0=
 github.com/influxdata/influxdb v0.0.0-20190501202428-050c6e35c5b5 h1:jkopNhPgiWmmjDk/6pDOjjFimA3HMCth+00hSGhgPXE=
 github.com/influxdata/influxdb v0.0.0-20190501202428-050c6e35c5b5/go.mod h1:VytXYMbMyZa7fOKyQ66/rqy8/fgGfdiZ3q6XgeTEw5s=
+github.com/influxdata/influxdb v0.0.0-20190529204823-c560e27e1d5a h1:sUCJ3Rnepw8Ir5PPRsxJxM+HkJ7lVssOq/GvsOERS4s=
+github.com/influxdata/influxdb v0.0.0-20190529204823-c560e27e1d5a/go.mod h1:Tj6iVmG2qXqlj7ZUVksWG4lzmLtqQSvE3e4LtdwYSQo=
 github.com/influxdata/influxdb1-client v0.0.0-20190402204710-8ff2fc3824fc h1:KpMgaYJRieDkHZJWY3LMafvtqS/U8xX6+lUN+OKpl/Y=
 github.com/influxdata/influxdb1-client v0.0.0-20190402204710-8ff2fc3824fc/go.mod h1:qj24IKcXYK6Iy9ceXlo3Tc+vtHo9lIhSX5JddghvEPo=
 github.com/influxdata/influxql v0.0.0-20180925231337-1cbfca8e56b6/go.mod h1:KpVI7okXjK6PRi3Z5B+mtKZli+R1DnZgb3N+tzevNgo=
