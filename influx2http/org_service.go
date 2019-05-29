@@ -50,7 +50,7 @@ func (s *OrganizationService) FindOrganization(ctx context.Context, filter influ
 
 // FindOrganizations returns all organizations that match the filter via HTTP.
 func (s *OrganizationService) FindOrganizations(ctx context.Context, filter influxdb.OrganizationFilter, opt ...influxdb.FindOptions) ([]*influxdb.Organization, int, error) {
-	url, err := newURL(s.Addr, organizationPath)
+	url, err := NewURL(s.Addr, organizationPath)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -70,7 +70,7 @@ func (s *OrganizationService) FindOrganizations(ctx context.Context, filter infl
 	}
 
 	SetToken(s.Token, req)
-	hc := newClient(url.Scheme, s.InsecureSkipVerify)
+	hc := NewClient(url.Scheme, s.InsecureSkipVerify)
 
 	resp, err := hc.Do(req)
 	if err != nil {

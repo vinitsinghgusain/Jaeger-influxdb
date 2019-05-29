@@ -261,46 +261,48 @@ func traceFromFluxTable(table flux.Table) (*model.Trace, error) {
 }
 
 // TracesFromFluxResult converts a flux Result to Jaeger traces.
-func TracesFromFluxResult(result flux.Result, spanMeasurement, logMeasurement string, logger hclog.Logger) ([]*model.Trace, error) {
+func TracesFromFluxResult(resultIterator flux.ResultIterator, spanMeasurement, logMeasurement string, logger hclog.Logger) ([]*model.Trace, error) {
 	var traces []*model.Trace
 	logsByTraceIDSpanID := make(map[model.TraceID]map[model.SpanID][]model.Log)
 
-	err := result.Tables().Do(func(table flux.Table) error {
-		measurement, err := getMeasurement(table)
-		if err != nil {
-			return err
-		}
-		switch measurement {
-		case spanMeasurement:
-			trace, err := traceFromFluxTable(table)
-			if err == nil {
-				traces = append(traces, trace)
+	for resultIterator.More() {
+		err := resultIterator.Next().Tables().Do(func(table flux.Table) error {
+			measurement, err := getMeasurement(table)
+			if err != nil {
+				return err
 			}
-			return err
-
-		case logMeasurement:
-			var traceID model.TraceID
-			if v := table.Key().LabelValue(common.TraceIDKey); v == nil {
-				return errors.Errorf("column '%s' not found in log table key", common.TraceIDKey)
-			} else {
-				traceID, err = model.TraceIDFromString(v.Str())
-				if err != nil {
-					return errors.WithMessage(err, "failed to deserialize '%s' from log table key")
+			switch measurement {
+			case spanMeasurement:
+				trace, err := traceFromFluxTable(table)
+				if err == nil {
+					traces = append(traces, trace)
 				}
-			}
+				return err
 
-			logs, err := logsFromFluxTable(table, logger)
-			if err == nil {
-				logsByTraceIDSpanID[traceID] = logs
-			}
-			return err
+			case logMeasurement:
+				var traceID model.TraceID
+				if v := table.Key().LabelValue(common.TraceIDKey); v == nil {
+					return errors.Errorf("column '%s' not found in log table key", common.TraceIDKey)
+				} else {
+					traceID, err = model.TraceIDFromString(v.Str())
+					if err != nil {
+						return errors.WithMessage(err, "failed to deserialize '%s' from log table key")
+					}
+				}
 
-		default:
-			return errors.Errorf("don't know what to do with measurement '%s'", measurement)
+				logs, err := logsFromFluxTable(table, logger)
+				if err == nil {
+					logsByTraceIDSpanID[traceID] = logs
+				}
+				return err
+
+			default:
+				return errors.Errorf("don't know what to do with measurement '%s'", measurement)
+			}
+		})
+		if err != nil {
+			return nil, err
 		}
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	for _, trace := range traces {
@@ -337,32 +339,33 @@ func logsFromFluxTable(table flux.Table, logger hclog.Logger) (map[model.SpanID]
 }
 
 // TraceIDsFromFluxResult converts an InfluxDB result to a slice of TraceIDs
-func TraceIDsFromFluxResult(result flux.Result) ([]model.TraceID, error) {
+func TraceIDsFromFluxResult(resultIterator flux.ResultIterator) ([]model.TraceID, error) {
 	var traceIDs []model.TraceID
-
-	err := result.Tables().Do(func(table flux.Table) error {
-		return table.Do(func(reader flux.ColReader) error {
-			var colI = -1
-			for i := range reader.Cols() {
-				if reader.Cols()[i].Label == common.TraceIDKey {
-					colI = i
+	for resultIterator.More() {
+		err := resultIterator.Next().Tables().Do(func(table flux.Table) error {
+			return table.Do(func(reader flux.ColReader) error {
+				var colI = -1
+				for i := range reader.Cols() {
+					if reader.Cols()[i].Label == common.TraceIDKey {
+						colI = i
+					}
 				}
-			}
-			if colI == -1 {
-				return fmt.Errorf("column '%s' not found in Flux result", common.TraceIDKey)
-			}
-			for rowI := 0; rowI < reader.Len(); rowI++ {
-				traceID, err := model.TraceIDFromString(reader.Strings(colI).ValueString(rowI))
-				if err != nil {
-					return errors.WithMessagef(err, "failed to get traceID from flux value '%s'", reader.Strings(colI).ValueString(rowI))
+				if colI == -1 {
+					return fmt.Errorf("column '%s' not found in Flux result", common.TraceIDKey)
 				}
-				traceIDs = append(traceIDs, traceID)
-			}
-			return nil
+				for rowI := 0; rowI < reader.Len(); rowI++ {
+					traceID, err := model.TraceIDFromString(reader.Strings(colI).ValueString(rowI))
+					if err != nil {
+						return errors.WithMessagef(err, "failed to get traceID from flux value '%s'", reader.Strings(colI).ValueString(rowI))
+					}
+					traceIDs = append(traceIDs, traceID)
+				}
+				return nil
+			})
 		})
-	})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return traceIDs, nil
@@ -432,50 +435,51 @@ func stringsToKeyValue(k, v string) (*model.KeyValue, error) {
 }
 
 // DependencyLinksFromResultV2 converts an InfluxDB result to a dependency graph
-func DependencyLinksFromResultV2(result flux.Result) ([]model.DependencyLink, error) {
+func DependencyLinksFromResultV2(resultIterator flux.ResultIterator) ([]model.DependencyLink, error) {
 	parentByChild := make(map[model.SpanID]model.SpanID)
 	serviceNameBySpanID := make(map[model.SpanID]string)
-
-	err := result.Tables().Do(func(table flux.Table) error {
-		return table.Do(func(reader flux.ColReader) error {
-			spanIDColI, serviceNameColI, referencesColI := -1, -1, -1
-			for i := range reader.Cols() {
-				switch reader.Cols()[i].Label {
-				case common.SpanIDKey:
-					spanIDColI = i
-				case common.ServiceNameKey:
-					serviceNameColI = i
-				case common.ReferencesKey:
-					referencesColI = i
-				}
-			}
-
-			for rowI := 0; rowI < reader.Len(); rowI++ {
-				spanID, err := model.SpanIDFromString(reader.Strings(spanIDColI).ValueString(rowI))
-				if err != nil {
-					return errors.WithMessagef(err, "failed to parse SpanID '%s'", reader.Strings(spanIDColI).ValueString(rowI))
-				}
-				serviceName := reader.Strings(serviceNameColI).ValueString(rowI)
-				serviceNameBySpanID[spanID] = serviceName
-
-				if referencesColI > -1 {
-					references, err := referencesFromString(reader.Strings(referencesColI).ValueString(rowI))
-					if err != nil {
-						return errors.WithMessagef(err, "failed to parse references '%s'", reader.Strings(referencesColI).ValueString(rowI))
+	for resultIterator.More() {
+		err := resultIterator.Next().Tables().Do(func(table flux.Table) error {
+			return table.Do(func(reader flux.ColReader) error {
+				spanIDColI, serviceNameColI, referencesColI := -1, -1, -1
+				for i := range reader.Cols() {
+					switch reader.Cols()[i].Label {
+					case common.SpanIDKey:
+						spanIDColI = i
+					case common.ServiceNameKey:
+						serviceNameColI = i
+					case common.ReferencesKey:
+						referencesColI = i
 					}
-					for _, reference := range references {
-						if reference.RefType == model.SpanRefType_CHILD_OF {
-							parentByChild[spanID] = reference.SpanID
+				}
+
+				for rowI := 0; rowI < reader.Len(); rowI++ {
+					spanID, err := model.SpanIDFromString(reader.Strings(spanIDColI).ValueString(rowI))
+					if err != nil {
+						return errors.WithMessagef(err, "failed to parse SpanID '%s'", reader.Strings(spanIDColI).ValueString(rowI))
+					}
+					serviceName := reader.Strings(serviceNameColI).ValueString(rowI)
+					serviceNameBySpanID[spanID] = serviceName
+
+					if referencesColI > -1 {
+						references, err := referencesFromString(reader.Strings(referencesColI).ValueString(rowI))
+						if err != nil {
+							return errors.WithMessagef(err, "failed to parse references '%s'", reader.Strings(referencesColI).ValueString(rowI))
+						}
+						for _, reference := range references {
+							if reference.RefType == model.SpanRefType_CHILD_OF {
+								parentByChild[spanID] = reference.SpanID
+							}
 						}
 					}
 				}
-			}
 
-			return nil
+				return nil
+			})
 		})
-	})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	m := make(map[string]*model.DependencyLink)

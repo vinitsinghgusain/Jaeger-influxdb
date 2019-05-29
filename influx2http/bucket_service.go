@@ -51,7 +51,7 @@ func (s *BucketService) FindBucket(ctx context.Context, filter influxdb.BucketFi
 // FindBuckets returns a list of buckets that match filter and the total count of matching buckets.
 // Additional options provide pagination & sorting.
 func (s *BucketService) FindBuckets(ctx context.Context, filter influxdb.BucketFilter, opt ...influxdb.FindOptions) ([]*influxdb.Bucket, int, error) {
-	u, err := newURL(s.Addr, bucketPath)
+	u, err := NewURL(s.Addr, bucketPath)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -86,7 +86,7 @@ func (s *BucketService) FindBuckets(ctx context.Context, filter influxdb.BucketF
 	req.URL.RawQuery = query.Encode()
 	SetToken(s.Token, req)
 
-	hc := newClient(u.Scheme, s.InsecureSkipVerify)
+	hc := NewClient(u.Scheme, s.InsecureSkipVerify)
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, 0, err

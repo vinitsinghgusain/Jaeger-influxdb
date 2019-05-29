@@ -5,7 +5,7 @@ import (
 	"net/url"
 )
 
-func newURL(addr, path string) (*url.URL, error) {
+func NewURL(addr, path string) (*url.URL, error) {
 	u, err := url.Parse(addr)
 	if err != nil {
 		return nil, err
@@ -14,7 +14,7 @@ func newURL(addr, path string) (*url.URL, error) {
 	return u, nil
 }
 
-func newClient(scheme string, insecure bool) *http.Client {
+func NewClient(scheme string, insecure bool) *http.Client {
 	hc := &http.Client{
 		Transport: defaultTransport,
 	}

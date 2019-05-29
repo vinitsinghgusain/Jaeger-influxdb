@@ -1,7 +1,6 @@
 package storev2
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,7 +9,9 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/csv"
+	"github.com/influxdata/flux/lang"
 	"github.com/influxdata/influxdb"
+	"github.com/influxdata/influxdb/query"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/influxdata/jaeger-influxdb/dbmodel"
 	"github.com/influxdata/jaeger-influxdb/influx2http"
@@ -22,12 +23,12 @@ var _ spanstore.Reader = (*Reader)(nil)
 
 // Reader can query for and load traces from InfluxDB v2.x.
 type Reader struct {
-	fluxService     *influx2http.FluxService
-	orgID           influxdb.ID
-	bucket          string
-	spanMeasurement string
-	logMeasurement  string
-	defaultLookback time.Duration
+	fluxQueryService *influx2http.FluxQueryService
+	orgID            influxdb.ID
+	bucket           string
+	spanMeasurement  string
+	logMeasurement   string
+	defaultLookback  time.Duration
 
 	resultDecoder *csv.ResultDecoder
 
@@ -35,40 +36,27 @@ type Reader struct {
 }
 
 // NewReader returns a new SpanReader for InfluxDB v2.x.
-func NewReader(fluxService *influx2http.FluxService, orgID influxdb.ID, bucket, spanMeasurement, logMeasurement string, defaultLookback time.Duration, logger hclog.Logger) *Reader {
+func NewReader(fluxQueryService *influx2http.FluxQueryService, orgID influxdb.ID, bucket, spanMeasurement, logMeasurement string, defaultLookback time.Duration, logger hclog.Logger) *Reader {
 	return &Reader{
-		resultDecoder:   csv.NewResultDecoder(csv.ResultDecoderConfig{}),
-		fluxService:     fluxService,
-		orgID:           orgID,
-		bucket:          bucket,
-		spanMeasurement: spanMeasurement,
-		logMeasurement:  logMeasurement,
-		defaultLookback: defaultLookback,
-		logger:          logger,
+		resultDecoder:    csv.NewResultDecoder(csv.ResultDecoderConfig{}),
+		fluxQueryService: fluxQueryService,
+		orgID:            orgID,
+		bucket:           bucket,
+		spanMeasurement:  spanMeasurement,
+		logMeasurement:   logMeasurement,
+		defaultLookback:  defaultLookback,
+		logger:           logger,
 	}
 }
 
-func (r *Reader) query(ctx context.Context, fluxQuery string) (flux.Result, error) {
+func (r *Reader) query(ctx context.Context, fluxQuery string) (flux.ResultIterator, error) {
 	println(fluxQuery)
-	queryRequest := influx2http.QueryRequest{
-		Query: fluxQuery,
-		Org:   &influxdb.Organization{ID: r.orgID},
-		Dialect: influx2http.QueryDialect{
-			Annotations: []string{"group", "datatype", "default"},
-		},
-	}.WithDefaults()
-
-	proxyRequest, err := queryRequest.ProxyRequest()
-	if err != nil {
-		return nil, err
+	request := &query.Request{
+		OrganizationID: r.orgID,
+		Compiler:       lang.FluxCompiler{Query: fluxQuery},
 	}
 
-	var buf bytes.Buffer
-	if _, err = r.fluxService.Query(ctx, &buf, proxyRequest); err != nil {
-		return nil, err
-	}
-
-	return r.resultDecoder.Decode(&buf)
+	return r.fluxQueryService.Query(ctx, request)
 }
 
 const queryGetServicesFlux = `
@@ -80,7 +68,7 @@ v1.measurementTagValues(bucket: "%s", measurement: "%s", tag: "%s")
 func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
 	println("GetServices called")
 
-	result, err := r.query(ctx, fmt.Sprintf(queryGetServicesFlux, r.bucket, r.spanMeasurement, common.ServiceNameKey))
+	resultIterator, err := r.query(ctx, fmt.Sprintf(queryGetServicesFlux, r.bucket, r.spanMeasurement, common.ServiceNameKey))
 	if err != nil {
 		if err == io.EOF {
 			err = nil
@@ -88,16 +76,18 @@ func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	var services []string
-	err = result.Tables().Do(func(table flux.Table) error {
-		return table.Do(func(reader flux.ColReader) error {
-			for rowI := 0; rowI < reader.Len(); rowI++ {
-				services = append(services, reader.Strings(0).ValueString(rowI))
-			}
-			return nil
+	for resultIterator.More() {
+		err = resultIterator.Next().Tables().Do(func(table flux.Table) error {
+			return table.Do(func(reader flux.ColReader) error {
+				for rowI := 0; rowI < reader.Len(); rowI++ {
+					services = append(services, reader.Strings(0).ValueString(rowI))
+				}
+				return nil
+			})
 		})
-	})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return services, nil
@@ -113,7 +103,7 @@ func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, e
 	println("GetOperations called")
 
 	q := fmt.Sprintf(queryGetOperationsFlux, r.bucket, common.OperationNameKey, r.spanMeasurement, common.ServiceNameKey, service)
-	result, err := r.query(ctx, q)
+	resultIterator, err := r.query(ctx, q)
 	if err != nil {
 		if err == io.EOF {
 			err = nil
@@ -122,16 +112,18 @@ func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, e
 	}
 
 	var operations []string
-	err = result.Tables().Do(func(table flux.Table) error {
-		return table.Do(func(reader flux.ColReader) error {
-			for rowI := 0; rowI < reader.Len(); rowI++ {
-				operations = append(operations, reader.Strings(0).ValueString(rowI))
-			}
-			return nil
+	for resultIterator.More() {
+		err = resultIterator.Next().Tables().Do(func(table flux.Table) error {
+			return table.Do(func(reader flux.ColReader) error {
+				for rowI := 0; rowI < reader.Len(); rowI++ {
+					operations = append(operations, reader.Strings(0).ValueString(rowI))
+				}
+				return nil
+			})
 		})
-	})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return operations, nil
@@ -224,7 +216,7 @@ from(bucket: "%%s")
 func (r *Reader) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
 	println("GetDependencies called")
 
-	result, err := r.query(context.TODO(),
+	resultIterator, err := r.query(context.TODO(),
 		fmt.Sprintf(getDependenciesQueryFlux,
 			r.bucket, endTs.Add(-1 * lookback).UTC().Format(time.RFC3339Nano), endTs.UTC().Format(time.RFC3339Nano), r.spanMeasurement))
 	if err != nil {
@@ -234,5 +226,5 @@ func (r *Reader) GetDependencies(endTs time.Time, lookback time.Duration) ([]mod
 		return nil, err
 	}
 
-	return dbmodel.DependencyLinksFromResultV2(result)
+	return dbmodel.DependencyLinksFromResultV2(resultIterator)
 }
