@@ -23,8 +23,6 @@ const (
 	FieldKey       = "_field"
 	ValueKey       = "_value"
 
-	TagKeyPrefix = "tag"
-
 	ReferenceTypeChildOf     = "ChildOf"
 	ReferenceTypeFollowsFrom = "FollowsFrom"
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
+	hclog "github.com/hashicorp/go-hclog"
 	"github.com/influxdata/flux"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/jaegertracing/jaeger/model"
@@ -170,26 +170,13 @@ func SpanFromFluxColReader(reader flux.ColReader, rowI int) (*model.Span, error)
 			span.References = references
 
 		default:
-			parts := strings.SplitN(col.Label, ":", 2)
-			if len(parts) < 2 {
-				errs = append(errs, fmt.Errorf("unrecognized field key '%s'", col.Label))
+			// Assume this is a span tag, which means the value is string type.
+			tag, err := stringsToKeyValue(col.Label, reader.Strings(colI).ValueString(rowI))
+			if err != nil {
+				errs = append(errs, errors.WithMessagef(err, "invalid tag value '%s'", reader.Strings(colI).ValueString(rowI)))
 				continue
 			}
-			prefix, key := parts[0], parts[1]
-
-			switch prefix {
-			case common.TagKeyPrefix:
-				// Assume this is a span tag, which means the value is string type.
-				tag, err := stringsToKeyValue(key, reader.Strings(colI).ValueString(rowI))
-				if err != nil {
-					errs = append(errs, errors.WithMessagef(err, "invalid tag value '%s'", reader.Strings(colI).ValueString(rowI)))
-					continue
-				}
-				span.Tags = append(span.Tags, *tag)
-
-			default:
-				errs = append(errs, fmt.Errorf("unrecognized field key prefix '%s'", col.Label))
-			}
+			span.Tags = append(span.Tags, *tag)
 		}
 	}
 

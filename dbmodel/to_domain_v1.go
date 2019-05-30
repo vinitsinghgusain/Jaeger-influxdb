@@ -3,12 +3,11 @@ package dbmodel
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strings"
 	"time"
 
-	"github.com/influxdata/influxdb1-client"
+	client "github.com/influxdata/influxdb1-client"
 	"github.com/influxdata/influxdb1-client/models"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/jaegertracing/jaeger/model"
@@ -181,19 +180,7 @@ func TraceFromInfluxQLRow(row *models.Row) (*model.Trace, error) {
 			referencesColI = colI
 
 		default:
-			parts := strings.SplitN(col, ":", 2)
-			if len(parts) < 2 {
-				errs = append(errs, fmt.Errorf("unrecognized key '%s'", col))
-				continue
-			}
-			prefix, key := parts[0], parts[1]
-
-			switch prefix {
-			case common.TagKeyPrefix:
-				jaegerTagKeysByColI[colI] = key
-			default:
-				errs = append(errs, fmt.Errorf("unrecognized field key prefix '%s' in key '%s", key, col))
-			}
+			jaegerTagKeysByColI[colI] = col
 		}
 	}
 	if len(errs) > 0 {

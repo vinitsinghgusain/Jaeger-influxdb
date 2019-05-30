@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hashicorp/go-hclog"
+	hclog "github.com/hashicorp/go-hclog"
 	"github.com/influxdata/influxdb/models"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/jaegertracing/jaeger/model"
@@ -27,7 +27,7 @@ func SpanToPointsV2(span *model.Span, spanMeasurement, logMeasurement string, lo
 			continue
 		}
 
-		tags.SetString(common.TagKeyPrefix+":"+key, value)
+		tags.SetString(key, value)
 	}
 
 	fields := models.Fields{}

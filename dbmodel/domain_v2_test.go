@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
+	hclog "github.com/hashicorp/go-hclog"
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/execute"
 	"github.com/influxdata/flux/execute/executetest"
@@ -146,12 +146,12 @@ var (
 				common.TraceIDKey:       traceID.String(),
 				common.ServiceNameKey:   spanA.Process.ServiceName,
 				common.OperationNameKey: spanA.OperationName,
-				"tag:tag-a":             "s:value-a",
-				"tag:tag-b":             "b:t",
-				"tag:tag-c":             "i:123",
-				"tag:tag-d":             "f:" + strconv.FormatFloat(123.456, 'E', -1, 64),
-				"tag:tag-e":             "B:Zm9v",
-				"tag:process-tag-a":     "s:process-value-a",
+				"tag-a":                 "s:value-a",
+				"tag-b":                 "b:t",
+				"tag-c":                 "i:123",
+				"tag-d":                 "f:" + strconv.FormatFloat(123.456, 'E', -1, 64),
+				"tag-e":                 "B:Zm9v",
+				"process-tag-a":         "s:process-value-a",
 			}),
 		map[string]interface{}{
 			common.SpanIDKey:         spanA.SpanID.String(),
@@ -192,11 +192,11 @@ var (
 	pointB0, _ = models.NewPoint(spanMeasurement,
 		models.NewTags(
 			map[string]string{
-				common.TraceIDKey:         traceID.String(),
-				common.ServiceNameKey:     spanB.Process.ServiceName,
-				common.OperationNameKey:   spanB.OperationName,
-				"tag:other-tag-a":         "s:other-value-a",
-				"tag:other-process-tag-a": "s:other-process-value-a",
+				common.TraceIDKey:       traceID.String(),
+				common.ServiceNameKey:   spanB.Process.ServiceName,
+				common.OperationNameKey: spanB.OperationName,
+				"other-tag-a":           "s:other-value-a",
+				"other-process-tag-a":   "s:other-process-value-a",
 			}),
 		map[string]interface{}{
 			common.SpanIDKey:         spanB.SpanID.String(),
@@ -229,14 +229,14 @@ var (
 			{Label: common.SpanIDKey, Type: flux.TString},
 			{Label: common.ServiceNameKey, Type: flux.TString},
 			{Label: common.OperationNameKey, Type: flux.TString},
-			{Label: "tag:tag-a", Type: flux.TString},
-			{Label: "tag:tag-b", Type: flux.TString},
-			{Label: "tag:tag-c", Type: flux.TString},
-			{Label: "tag:tag-d", Type: flux.TString},
-			{Label: "tag:tag-e", Type: flux.TString},
-			{Label: "tag:other-tag-a", Type: flux.TString},
-			{Label: "tag:process-tag-a", Type: flux.TString},
-			{Label: "tag:other-process-tag-a", Type: flux.TString},
+			{Label: "tag-a", Type: flux.TString},
+			{Label: "tag-b", Type: flux.TString},
+			{Label: "tag-c", Type: flux.TString},
+			{Label: "tag-d", Type: flux.TString},
+			{Label: "tag-e", Type: flux.TString},
+			{Label: "other-tag-a", Type: flux.TString},
+			{Label: "process-tag-a", Type: flux.TString},
+			{Label: "other-process-tag-a", Type: flux.TString},
 			{Label: common.DurationKey, Type: flux.TInt},
 			{Label: common.FlagsKey, Type: flux.TInt},
 			{Label: common.ProcessTagKeysKey, Type: flux.TString},
