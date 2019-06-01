@@ -30,13 +30,17 @@ func main() {
 	v := viper.New()
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
-	v.SetConfigFile(configPath)
 
-	err := v.ReadInConfig()
-	if err != nil {
-		logger.Error("failed to parse configuration file", "error", err)
-		os.Exit(1)
+	if configPath != "" {
+		v.SetConfigFile(configPath)
+
+		err := v.ReadInConfig()
+		if err != nil {
+			logger.Error("failed to parse configuration file", "error", err)
+			os.Exit(1)
+		}
 	}
+
 	conf := config.Configuration{}
 	conf.InitFromViper(v)
 
@@ -48,6 +52,7 @@ func main() {
 
 	var store shared.StoragePlugin
 	var closeStore func() error
+	var err error
 
 	if conf.Database != "" {
 		logger.Warn("Started with InfluxDB v1")

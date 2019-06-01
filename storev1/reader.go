@@ -42,7 +42,7 @@ func NewReader(client *client.Client, database, retentionPolicy, spanMeasurement
 }
 
 func (r *Reader) query(ctx context.Context, influxQLQuery string) (*client.Response, error) {
-	println(influxQLQuery)
+	r.logger.Warn(influxQLQuery)
 	q := client.Query{
 		Command:         influxQLQuery,
 		Database:        r.database,
@@ -173,7 +173,7 @@ func (r *Reader) FindTraces(ctx context.Context, query *spanstore.TraceQueryPara
 
 // GetTrace takes a traceID and returns a Trace associated with that traceID
 func (r *Reader) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Trace, error) {
-	println("GetTrace called")
+	r.logger.Warn("GetTrace called")
 
 	response, err := r.query(ctx, dbmodel.NewInfluxQLTraceQuery(r.spanMeasurement).BuildTraceQuery([]model.TraceID{traceID}))
 	if err != nil {

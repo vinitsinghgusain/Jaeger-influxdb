@@ -50,7 +50,7 @@ func NewReader(fluxQueryService *influx2http.FluxQueryService, orgID influxdb.ID
 }
 
 func (r *Reader) query(ctx context.Context, fluxQuery string) (flux.ResultIterator, error) {
-	println(fluxQuery)
+	r.logger.Warn(fluxQuery)
 	request := &query.Request{
 		OrganizationID: r.orgID,
 		Compiler:       lang.FluxCompiler{Query: fluxQuery},
@@ -66,7 +66,7 @@ v1.measurementTagValues(bucket: "%s", measurement: "%s", tag: "%s")
 
 // GetServices returns all services traced by Jaeger
 func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
-	println("GetServices called")
+	r.logger.Warn("GetServices called")
 
 	resultIterator, err := r.query(ctx, fmt.Sprintf(queryGetServicesFlux, r.bucket, r.spanMeasurement, common.ServiceNameKey))
 	if err != nil {
@@ -100,7 +100,7 @@ v1.tagValues(bucket:"%s", tag:"%s", predicate: (r) => r._measurement=="%s" and r
 
 // GetOperations returns all operations for a specific service traced by Jaeger
 func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, error) {
-	println("GetOperations called")
+	r.logger.Warn("GetOperations called")
 
 	q := fmt.Sprintf(queryGetOperationsFlux, r.bucket, common.OperationNameKey, r.spanMeasurement, common.ServiceNameKey, service)
 	resultIterator, err := r.query(ctx, q)
@@ -131,7 +131,7 @@ func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, e
 
 // GetTrace takes a traceID and returns a Trace associated with that traceID
 func (r *Reader) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Trace, error) {
-	println("GetTrace called")
+	r.logger.Warn("GetTrace called")
 
 	result, err := r.query(ctx,
 		dbmodel.NewFluxTraceQuery(r.bucket, r.spanMeasurement, r.logMeasurement, time.Now().Add(r.defaultLookback)).BuildTraceQuery([]model.TraceID{traceID}))
@@ -158,7 +158,7 @@ func (r *Reader) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Tr
 
 // FindTraces retrieve traces that match the traceQuery
 func (r *Reader) FindTraces(ctx context.Context, query *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
-	println("FindTraces called")
+	r.logger.Warn("FindTraces called")
 
 	traceIDs, err := r.FindTraceIDs(ctx, query)
 	if err != nil {
@@ -189,7 +189,7 @@ func (r *Reader) FindTraces(ctx context.Context, query *spanstore.TraceQueryPara
 
 // FindTraceIDs retrieve traceIDs that match the traceQuery
 func (r *Reader) FindTraceIDs(ctx context.Context, query *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
-	println("FindTraceIDs called")
+	r.logger.Warn("FindTraceIDs called")
 
 	q := dbmodel.FluxTraceQueryFromTQP(r.bucket, r.spanMeasurement, r.logMeasurement, query)
 	result, err := r.query(ctx, q.BuildTraceIDQuery())
@@ -214,7 +214,7 @@ from(bucket: "%%s")
 
 // GetDependencies returns all inter-service dependencies
 func (r *Reader) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
-	println("GetDependencies called")
+	r.logger.Warn("GetDependencies called")
 
 	resultIterator, err := r.query(context.TODO(),
 		fmt.Sprintf(getDependenciesQueryFlux,
