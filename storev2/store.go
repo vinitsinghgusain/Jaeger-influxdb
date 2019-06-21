@@ -39,14 +39,14 @@ func NewStore(conf *config.Configuration, logger hclog.Logger) (*Store, func() e
 		Addr:  conf.Host,
 		Token: conf.Token,
 	}
-	reader := NewReader(fluxQueryService, orgID, conf.Bucket, common.DefaultSpanMeasurement, common.DefaultLogMeasurement, conf.DefaultLookback, logger)
+	reader := NewReader(fluxQueryService, orgID, conf.Bucket, common.DefaultSpanMeasurement, common.DefaultSpanMetaMeasurement, common.DefaultLogMeasurement, conf.DefaultLookback, logger)
 
 	writeService := &influx2http.WriteService{
 		Addr:      conf.Host,
 		Token:     conf.Token,
 		Precision: "ns",
 	}
-	writer := NewWriter(writeService, orgID, bucketID, common.DefaultSpanMeasurement, common.DefaultLogMeasurement, logger)
+	writer := NewWriter(writeService, orgID, bucketID, common.DefaultSpanMeasurement, common.DefaultSpanMetaMeasurement, common.DefaultLogMeasurement, logger)
 
 	store := &Store{
 		reader: reader,

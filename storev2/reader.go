@@ -23,12 +23,13 @@ var _ spanstore.Reader = (*Reader)(nil)
 
 // Reader can query for and load traces from InfluxDB v2.x.
 type Reader struct {
-	fluxQueryService *influx2http.FluxQueryService
-	orgID            influxdb.ID
-	bucket           string
-	spanMeasurement  string
-	logMeasurement   string
-	defaultLookback  time.Duration
+	fluxQueryService    *influx2http.FluxQueryService
+	orgID               influxdb.ID
+	bucket              string
+	spanMeasurement     string
+	spanMetaMeasurement string
+	logMeasurement      string
+	defaultLookback     time.Duration
 
 	resultDecoder *csv.ResultDecoder
 
@@ -36,16 +37,17 @@ type Reader struct {
 }
 
 // NewReader returns a new SpanReader for InfluxDB v2.x.
-func NewReader(fluxQueryService *influx2http.FluxQueryService, orgID influxdb.ID, bucket, spanMeasurement, logMeasurement string, defaultLookback time.Duration, logger hclog.Logger) *Reader {
+func NewReader(fluxQueryService *influx2http.FluxQueryService, orgID influxdb.ID, bucket, spanMeasurement, spanMetaMeasurement, logMeasurement string, defaultLookback time.Duration, logger hclog.Logger) *Reader {
 	return &Reader{
-		resultDecoder:    csv.NewResultDecoder(csv.ResultDecoderConfig{}),
-		fluxQueryService: fluxQueryService,
-		orgID:            orgID,
-		bucket:           bucket,
-		spanMeasurement:  spanMeasurement,
-		logMeasurement:   logMeasurement,
-		defaultLookback:  defaultLookback,
-		logger:           logger,
+		resultDecoder:       csv.NewResultDecoder(csv.ResultDecoderConfig{}),
+		fluxQueryService:    fluxQueryService,
+		orgID:               orgID,
+		bucket:              bucket,
+		spanMeasurement:     spanMeasurement,
+		spanMetaMeasurement: spanMetaMeasurement,
+		logMeasurement:      logMeasurement,
+		defaultLookback:     defaultLookback,
+		logger:              logger,
 	}
 }
 
@@ -68,7 +70,7 @@ v1.measurementTagValues(bucket: "%s", measurement: "%s", tag: "%s")
 func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
 	r.logger.Warn("GetServices called")
 
-	resultIterator, err := r.query(ctx, fmt.Sprintf(queryGetServicesFlux, r.bucket, r.spanMeasurement, common.ServiceNameKey))
+	resultIterator, err := r.query(ctx, fmt.Sprintf(queryGetServicesFlux, r.bucket, r.spanMetaMeasurement, common.ServiceNameKey))
 	if err != nil {
 		if err == io.EOF {
 			err = nil
@@ -102,7 +104,7 @@ v1.tagValues(bucket:"%s", tag:"%s", predicate: (r) => r._measurement=="%s" and r
 func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, error) {
 	r.logger.Warn("GetOperations called")
 
-	q := fmt.Sprintf(queryGetOperationsFlux, r.bucket, common.OperationNameKey, r.spanMeasurement, common.ServiceNameKey, service)
+	q := fmt.Sprintf(queryGetOperationsFlux, r.bucket, common.OperationNameKey, r.spanMetaMeasurement, common.ServiceNameKey, service)
 	resultIterator, err := r.query(ctx, q)
 	if err != nil {
 		if err == io.EOF {
