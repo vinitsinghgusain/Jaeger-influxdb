@@ -18,26 +18,28 @@ var _ spanstore.Reader = (*Reader)(nil)
 
 // Reader can query for and load traces from InfluxDB v1.x.
 type Reader struct {
-	client          *client.Client
-	database        string
-	retentionPolicy string
-	spanMeasurement string
-	logMeasurement  string
-	defaultLookback time.Duration
+	client              *client.Client
+	database            string
+	retentionPolicy     string
+	spanMeasurement     string
+	spanMetaMeasurement string
+	logMeasurement      string
+	defaultLookback     time.Duration
 
 	logger hclog.Logger
 }
 
 // NewReader returns a new SpanReader for InfluxDB v1.x.
-func NewReader(client *client.Client, database, retentionPolicy, spanMeasurement, logMeasurement string, defaultLookback time.Duration, logger hclog.Logger) *Reader {
+func NewReader(client *client.Client, database, retentionPolicy, spanMeasurement, spanMetaMeasurement, logMeasurement string, defaultLookback time.Duration, logger hclog.Logger) *Reader {
 	return &Reader{
-		client:          client,
-		database:        database,
-		retentionPolicy: retentionPolicy,
-		spanMeasurement: spanMeasurement,
-		logMeasurement:  logMeasurement,
-		defaultLookback: defaultLookback,
-		logger:          logger,
+		client:              client,
+		database:            database,
+		retentionPolicy:     retentionPolicy,
+		spanMeasurement:     spanMeasurement,
+		spanMetaMeasurement: spanMetaMeasurement,
+		logMeasurement:      logMeasurement,
+		defaultLookback:     defaultLookback,
+		logger:              logger,
 	}
 }
 
@@ -60,11 +62,11 @@ func (r *Reader) query(ctx context.Context, influxQLQuery string) (*client.Respo
 	return response, nil
 }
 
-var queryGetServicesInfluxQL = fmt.Sprintf(`show tag values with key = "%s"`, common.ServiceNameKey)
+var queryGetServicesInfluxQL = fmt.Sprintf(`SHOW TAG VALUES FROM "%%s" WITH KEY = "%s"`, common.ServiceNameKey)
 
 // GetServices returns all services traced by Jaeger
 func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
-	response, err := r.query(ctx, queryGetServicesInfluxQL)
+	response, err := r.query(ctx, fmt.Sprintf(queryGetServicesInfluxQL, r.spanMetaMeasurement))
 	if err != nil {
 		return nil, err
 	}
@@ -91,11 +93,11 @@ func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
 	return services, nil
 }
 
-var queryGetOperationsInfluxQL = fmt.Sprintf(`show tag values with key = "%s" where "%s" = '%%s'`, common.OperationNameKey, common.ServiceNameKey)
+var queryGetOperationsInfluxQL = fmt.Sprintf(`SHOW TAG VALUES FROM "%%s" WITH KEY = "%s" WHERE "%s" = '%%s'`, common.OperationNameKey, common.ServiceNameKey)
 
 // GetOperations returns all operations for a specific service traced by Jaeger
 func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, error) {
-	response, err := r.query(ctx, fmt.Sprintf(queryGetOperationsInfluxQL, service))
+	response, err := r.query(ctx, fmt.Sprintf(queryGetOperationsInfluxQL, r.spanMetaMeasurement, service))
 	if err != nil {
 		return nil, err
 	}

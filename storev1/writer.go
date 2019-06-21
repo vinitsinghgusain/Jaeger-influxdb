@@ -8,10 +8,12 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/influxdata/influxdb1-client"
+	"github.com/influxdata/influxdb1-client/models"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/influxdata/jaeger-influxdb/dbmodel"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
+	"github.com/pkg/errors"
 )
 
 var (
@@ -21,29 +23,34 @@ var (
 
 // Writer handles all writes to InfluxDB v1.x for the Jaeger data model
 type Writer struct {
-	client          *client.Client
-	database        string
-	retentionPolicy string
-	spanMeasurement string
-	logMeasurement  string
+	client              *client.Client
+	database            string
+	retentionPolicy     string
+	spanMeasurement     string
+	spanMetaMeasurement string
+	logMeasurement      string
 
 	// Points as line protocol
 	writeCh chan string
 	writeWG sync.WaitGroup
 
+	metaCache *common.WriterMetaCache
+
 	logger hclog.Logger
 }
 
 // NewWriter returns a Writer for InfluxDB v1.x
-func NewWriter(client *client.Client, database, retentionPolicy, spanMeasurement, logMeasurement string, logger hclog.Logger) *Writer {
+func NewWriter(client *client.Client, database, retentionPolicy, spanMeasurement, spanMetaMeasurement, logMeasurement string, logger hclog.Logger) *Writer {
 	w := &Writer{
-		client:          client,
-		database:        database,
-		retentionPolicy: retentionPolicy,
-		spanMeasurement: spanMeasurement,
-		logMeasurement:  logMeasurement,
+		client:              client,
+		database:            database,
+		retentionPolicy:     retentionPolicy,
+		spanMeasurement:     spanMeasurement,
+		spanMetaMeasurement: spanMetaMeasurement,
+		logMeasurement:      logMeasurement,
 
-		writeCh: make(chan string),
+		writeCh:   make(chan string),
+		metaCache: common.NewWriterMetaCache(common.MetaCacheInterval),
 
 		logger: logger,
 	}
@@ -75,6 +82,23 @@ func (w *Writer) WriteSpan(span *model.Span) error {
 	for _, point := range points {
 		w.writeCh <- point.String()
 	}
+
+	if w.metaCache.ShouldWrite(span.Process.ServiceName, span.OperationName, span.StartTime) {
+		tags := models.NewTags(map[string]string{
+			common.ServiceNameKey:   span.Process.ServiceName,
+			common.OperationNameKey: span.OperationName,
+		})
+		fields := models.Fields{
+			"v": true,
+		}
+		point, err := models.NewPoint(w.spanMetaMeasurement, tags, fields, span.StartTime)
+		if err != nil {
+			return errors.Wrap(err, "failed to create meta point")
+		}
+
+		w.writeCh <- point.String()
+	}
+
 	return nil
 }
 

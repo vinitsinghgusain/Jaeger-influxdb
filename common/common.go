@@ -16,8 +16,9 @@ const (
 	ProcessTagKeysKey = "process_tag_keys"
 	ReferencesKey     = "references"
 
-	DefaultSpanMeasurement = "span"
-	DefaultLogMeasurement  = "log"
+	DefaultSpanMeasurement     = "span"      // Store spans here
+	DefaultSpanMetaMeasurement = "span-meta" // Store sparse span meta data here
+	DefaultLogMeasurement      = "log"       // Store logs here
 
 	MeasurementKey = "_measurement"
 	FieldKey       = "_field"
@@ -28,4 +29,6 @@ const (
 
 	MaxFlushPoints   = 5000
 	MaxFlushInterval = time.Second
+
+	MetaCacheInterval = time.Hour
 )

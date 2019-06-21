@@ -45,8 +45,8 @@ func NewStore(conf *config.Configuration, logger hclog.Logger) (*Store, func() e
 		return nil, nil, err
 	}
 
-	reader := NewReader(influxClient, conf.Database, conf.RetentionPolicy, common.DefaultSpanMeasurement, common.DefaultLogMeasurement, conf.DefaultLookback, logger)
-	writer := NewWriter(influxClient, conf.Database, conf.RetentionPolicy, common.DefaultSpanMeasurement, common.DefaultLogMeasurement, logger)
+	reader := NewReader(influxClient, conf.Database, conf.RetentionPolicy, common.DefaultSpanMeasurement, common.DefaultSpanMetaMeasurement, common.DefaultLogMeasurement, conf.DefaultLookback, logger)
+	writer := NewWriter(influxClient, conf.Database, conf.RetentionPolicy, common.DefaultSpanMeasurement, common.DefaultSpanMetaMeasurement, common.DefaultLogMeasurement, logger)
 	store := &Store{
 		reader: reader,
 		writer: writer,
