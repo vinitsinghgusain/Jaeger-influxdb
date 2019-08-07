@@ -18,7 +18,7 @@ services:
   jaeger-all-in-one:
     build:
       context: .
-      dockerfile: ./cmd/jaeger-influxdb/Dockerfile.all-in-one
+      dockerfile: ./cmd/jaeger-all-in-one-influxdb/Dockerfile
     container_name: jaeger-all-in-one
     depends_on:
       - influxdb

@@ -1,0 +1,6 @@
+{
+  "default_strategy": {
+    "type": "ratelimiting",
+    "param": 10
+  }
+}

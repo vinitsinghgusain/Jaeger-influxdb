@@ -18,7 +18,7 @@ docker: docker-all-in-one docker-collector docker-query
 
 .PHONY: docker-all-in-one
 docker-all-in-one: build-linux
-	docker build . -f ./cmd/jaeger-influxdb/Dockerfile.all-in-one -t $(DOCKER_NAMESPACE)/jaeger-all-in-one-influxdb:$(DOCKER_TAG)
+	docker build . -f ./cmd/jaeger-all-in-one-influxdb/Dockerfile -t $(DOCKER_NAMESPACE)/jaeger-all-in-one-influxdb:$(DOCKER_TAG)
 
 .PHONY: docker-collector
 docker-collector: build-linux
