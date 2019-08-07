@@ -2,10 +2,8 @@
 package options
 
 import (
-	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/influxdata/flux/parser"
@@ -18,18 +16,6 @@ import (
 	"github.com/influxdata/influxdb/pkg/pointer"
 	cron "gopkg.in/robfig/cron.v2"
 )
-
-// optionCache is enabled for tests, to work around https://github.com/influxdata/platform/issues/484.
-var optionCache map[string]Options
-
-var optionCacheMu sync.Mutex
-
-// EnableScriptCacheForTest is used as a workaround for https://github.com/influxdata/platform/issues/484,
-// and should be removed after that issue is addressed.
-// Do not call this method in production code, as it will leak memory.
-func EnableScriptCacheForTest() {
-	optionCache = make(map[string]Options)
-}
 
 const maxConcurrency = 100
 const maxRetry = 10
@@ -210,15 +196,6 @@ func grabTaskOptionAST(p *ast.Package, keys ...string) map[string]ast.Expression
 
 // FromScript extracts Options from a Flux script.
 func FromScript(script string) (Options, error) {
-	if optionCache != nil {
-		optionCacheMu.Lock()
-		opt, ok := optionCache[script]
-		optionCacheMu.Unlock()
-
-		if ok {
-			return opt, nil
-		}
-	}
 	opt := Options{Retry: pointer.Int64(1), Concurrency: pointer.Int64(1)}
 
 	fluxAST, err := flux.Parse(script)
@@ -234,7 +211,7 @@ func FromScript(script string) (Options, error) {
 	// pull options from the program scope
 	task, ok := scope.Lookup("task")
 	if !ok {
-		return opt, errors.New("missing required option: 'task'")
+		return opt, ErrMissingRequiredTaskOption("task")
 	}
 	// check to make sure task is an object
 	if err := checkNature(task.PolyType().Nature(), semantic.Object); err != nil {
@@ -247,7 +224,7 @@ func FromScript(script string) (Options, error) {
 
 	nameVal, ok := optObject.Get(optName)
 	if !ok {
-		return opt, errors.New("missing name in task options")
+		return opt, ErrMissingRequiredTaskOption("name")
 	}
 
 	if err := checkNature(nameVal.PolyType().Nature(), semantic.String); err != nil {
@@ -257,11 +234,11 @@ func FromScript(script string) (Options, error) {
 	crVal, cronOK := optObject.Get(optCron)
 	everyVal, everyOK := optObject.Get(optEvery)
 	if cronOK && everyOK {
-		return opt, errors.New("cannot use both cron and every in task options")
+		return opt, ErrDuplicateIntervalField
 	}
 
 	if !cronOK && !everyOK {
-		return opt, errors.New("cron or every is required")
+		return opt, ErrMissingRequiredTaskOption("cron or every is required")
 	}
 
 	if cronOK {
@@ -277,14 +254,14 @@ func FromScript(script string) (Options, error) {
 		}
 		dur, ok := durTypes["every"]
 		if !ok || dur == nil {
-			return opt, errors.New("failed to parse `every` in task")
+			return opt, ErrParseTaskOptionField("every")
 		}
 		durNode, err := parseSignedDuration(dur.Location().Source)
 		if err != nil {
 			return opt, err
 		}
 		if !ok || durNode == nil {
-			return opt, errors.New("failed to parse `every` in task")
+			return opt, ErrParseTaskOptionField("every")
 		}
 		durNode.BaseNode = ast.BaseNode{}
 		opt.Every.Node = *durNode
@@ -296,14 +273,14 @@ func FromScript(script string) (Options, error) {
 		}
 		dur, ok := durTypes["offset"]
 		if !ok || dur == nil {
-			return opt, errors.New("failed to parse `offset` in task")
+			return opt, ErrParseTaskOptionField("offset")
 		}
 		durNode, err := parseSignedDuration(dur.Location().Source)
 		if err != nil {
 			return opt, err
 		}
 		if !ok || durNode == nil {
-			return opt, errors.New("failed to parse `offset` in task")
+			return opt, ErrParseTaskOptionField("offset")
 		}
 		durNode.BaseNode = ast.BaseNode{}
 		opt.Offset = &Duration{}
@@ -326,12 +303,6 @@ func FromScript(script string) (Options, error) {
 
 	if err := opt.Validate(); err != nil {
 		return opt, err
-	}
-
-	if optionCache != nil {
-		optionCacheMu.Lock()
-		optionCache[script] = opt
-		optionCacheMu.Unlock()
 	}
 
 	return opt, nil

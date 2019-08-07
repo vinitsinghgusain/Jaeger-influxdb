@@ -1,4 +1,85 @@
-## v2.0.0-alpha.10 [unreleased]
+## v2.0.0-alpha.17 [unreleased]
+
+### Features
+
+### UI Improvements
+
+### Bug Fixes
+
+## v2.0.0-alpha.16 [2019-07-25]
+
+### Bug Fixes
+
+1. [14385](https://github.com/influxdata/influxdb/pull/14385): Add link to Documentation text in line protocol upload overlay
+1. [14344](https://github.com/influxdata/influxdb/pull/14344): Fix issue in Authorization API, can't create auth for another user.
+1. [14352](https://github.com/influxdata/influxdb/pull/14352): Fix Influx CLI ignored user flag for auth creation.
+1. [14379](https://github.com/influxdata/influxdb/pull/14379): Fix the map example in the documentation
+1. [14423](https://github.com/influxdata/influxdb/pull/14423): Ignore null/empty Flux rows which prevents a single stat/gauge crash.
+1. [14434](https://github.com/influxdata/influxdb/pull/14434): Fixes an issue where clicking on a dashboard name caused an incorrect redirect.
+1. [14441](https://github.com/influxdata/influxdb/pull/14441): Upgrade templates lib to 0.5.0
+1. [14453](https://github.com/influxdata/influxdb/pull/14453): Upgrade giraffe lib to 0.16.1
+1. [14412](https://github.com/influxdata/influxdb/pull/14412): Fix incorrect notification type for manually running a Task
+1. [14356](https://github.com/influxdata/influxdb/pull/14356): Fix an issue where canceled tasks did not resume.
+
+## v2.0.0-alpha.15 [2019-07-11]
+
+### Features
+
+1. [14256](https://github.com/influxdata/influxdb/pull/14256): Add time zone support to UI
+2. [14243](https://github.com/influxdata/influxdb/pull/14243): Addded new storage inspection tool to verify tsm files
+
+### Bug Fixes
+
+1. [14287](https://github.com/influxdata/influxdb/pull/14287) Fix incorrect reporting of task as successful when error occurs during result iteration
+
+### Known Issues
+
+1. [influxdata/flux#1492](https://github.com/influxdata/flux/issues/1492): Null support in Flux was introduced in Alhpa 14. Several null issues were fixed in this release, but one known issue remains - Users may hit a panic if the first record processed by a map function has a null value.
+
+## v2.0.0-alpha.14 [2019-06-28]
+
+### Features
+
+1. [14221](https://github.com/influxdata/influxdb/pull/14221): Add influxd inspect verify-wal tool
+1. [14218](https://github.com/influxdata/influxdb/commit/4faf2a24def4f351aef5b3c0f2907c385f82fdb9): Move to Flux .34.2 - which includes new string functions and initial multi-datasource support with Sql.from()
+1. [14164](https://github.com/influxdata/influxdb/pull/14164): Only click save once to save cell
+1. [14188](https://github.com/influxdata/influxdb/pull/14188): Enable selecting more columns for line visualizations
+
+### UI Improvements
+
+1. [14194](https://github.com/influxdata/influxdb/pull/14194): Draw gauges correctly on HiDPI displays
+1. [14194](https://github.com/influxdata/influxdb/pull/14194): Clamp gauge position to gauge domain
+1. [14168](https://github.com/influxdata/influxdb/pull/14168): Improve display of error messages
+1. [14157](https://github.com/influxdata/influxdb/pull/14157): Remove rendering bottleneck when streaming Flux responses
+1. [14165](https://github.com/influxdata/influxdb/pull/14165): Prevent variable dropdown from clipping
+
+## v2.0.0-alpha.13 [2019-06-13]
+
+### Features
+
+1. [14130](https://github.com/influxdata/influxdb/pull/14130): Add static templates for system, docker, redis, kubernetes
+1. [14189](https://github.com/influxdata/influxdb/pull/14189): Add option to select a token when creating a task
+1. [14200](https://github.com/influxdata/influxdb/pull/14200): Add the ability to update a token when updating a task
+
+## v2.0.0-alpha.12 [2019-06-13]
+
+### Features
+
+1. [14059](https://github.com/influxdata/influxdb/pull/14059): Enable formatting line graph y ticks with binary prefix
+1. [14052](https://github.com/influxdata/influxdb/pull/14052): Add x and y column pickers to graph types
+1. [14128](https://github.com/influxdata/influxdb/pull/14128): Add option to shade area below line graphs
+
+### Bug Fixes
+
+1. [14085](https://github.com/influxdata/influxdb/pull/14085): Fix performance regression in graph tooltips
+
+### UI Improvements
+
+## v2.0.0-alpha.11 [2019-05-31]
+
+1. [14031](https://github.com/influxdata/influxdb/pull/14031): Correctly check if columnKeys include xColumn in heatmap
+
+## v2.0.0-alpha.10 [2019-05-30]
 
 ### Features
 
