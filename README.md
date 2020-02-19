@@ -13,6 +13,10 @@ it you will use the right client.
 
 The plugin uses `go/mod` to manage its dependencies.
 
+## License
+
+The InfluxDB Storage gRPC Plugin for Jaeger is an [MIT licensed](LICENSE) open source project.
+
 ## Docker
 We provides three docker images that you can use:
 
