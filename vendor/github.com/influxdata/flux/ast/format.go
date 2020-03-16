@@ -165,6 +165,8 @@ func getPrecedences(parent, child Node) (int, int) {
 		pvp = getPrecedence(member)
 	case *IndexExpression:
 		pvp = getPrecedence(index)
+	case *ParenExpression:
+		return getPrecedences(parent.Expression, child)
 	}
 
 	switch child := child.(type) {
@@ -180,6 +182,8 @@ func getPrecedences(parent, child Node) (int, int) {
 		pvc = getPrecedence(member)
 	case *IndexExpression:
 		pvc = getPrecedence(index)
+	case *ParenExpression:
+		return getPrecedences(parent, child.Expression)
 	}
 
 	return pvp, pvc
@@ -571,6 +575,37 @@ func (f *formatter) formatIdentifier(n *Identifier) {
 	f.writeString(n.Name)
 }
 
+func (f *formatter) formatStringExpression(n *StringExpression) {
+	f.writeRune('"')
+	for _, p := range n.Parts {
+		f.formatStringExpressionPart(p)
+	}
+	f.writeRune('"')
+}
+
+func (f *formatter) formatStringExpressionPart(n StringExpressionPart) {
+	switch p := n.(type) {
+	case *TextPart:
+		f.formatTextPart(p)
+	case *InterpolatedPart:
+		f.formatInterpolatedPart(p)
+	}
+}
+
+func (f *formatter) formatTextPart(n *TextPart) {
+	f.writeString(n.Value)
+}
+
+func (f *formatter) formatInterpolatedPart(n *InterpolatedPart) {
+	f.writeString("${")
+	f.formatNode(n.Expression)
+	f.writeString("}")
+}
+
+func (f *formatter) formatParenExpression(n *ParenExpression) {
+	f.formatNode(n.Expression)
+}
+
 func (f *formatter) formatStringLiteral(n *StringLiteral) {
 	if n.Loc != nil && n.Loc.Source != "" {
 		// Preserve the exact literal if we have it
@@ -698,6 +733,14 @@ func (f *formatter) formatNode(n Node) {
 		f.formatIdentifier(n)
 	case *PipeLiteral:
 		f.formatPipeLiteral(n)
+	case *StringExpression:
+		f.formatStringExpression(n)
+	case *TextPart:
+		f.formatTextPart(n)
+	case *InterpolatedPart:
+		f.formatInterpolatedPart(n)
+	case *ParenExpression:
+		f.formatParenExpression(n)
 	case *StringLiteral:
 		f.formatStringLiteral(n)
 	case *BooleanLiteral:

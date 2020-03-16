@@ -1,7 +1,8 @@
 package execute
 
 import (
-	"database/sql"
+	"io"
+
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/values"
 )
@@ -9,9 +10,8 @@ import (
 type RowReader interface {
 	Next() bool
 	GetNextRow() ([]values.Value, error)
-	InitColumnNames([]string)
-	InitColumnTypes([]*sql.ColumnType)
 	ColumnNames() []string
 	ColumnTypes() []flux.ColType
 	SetColumns([]interface{})
+	io.Closer
 }

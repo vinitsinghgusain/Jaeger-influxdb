@@ -5,7 +5,8 @@ import (
 	"strings"
 
 	"github.com/influxdata/flux/ast"
-	"github.com/pkg/errors"
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 )
 
 // GenerateConstraints walks the graph and generates constraints between type vairables provided in the annotations.
@@ -75,7 +76,9 @@ func (v ConstraintGenerator) Done(node Node) {
 			v.cs.AddTypeConst(a.Var, a.Type, node.Location())
 		}
 	}
-	a.Err = errors.Wrapf(a.Err, "type error %v", node.Location())
+	if a.Err != nil {
+		a.Err = errors.Wrapf(a.Err, codes.Inherit, "type error %v", node.Location())
+	}
 	//log.Printf("typeof %T@%v %v %v %v", node, node.Location(), a.Var, a.Type, a.Err)
 	if *v.err == nil && a.Err != nil {
 		*v.err = a.Err
@@ -86,10 +89,10 @@ func (v ConstraintGenerator) Done(node Node) {
 func (v ConstraintGenerator) lookup(n Node) (PolyType, error) {
 	a, ok := v.cs.annotations[n]
 	if !ok {
-		return nil, fmt.Errorf("no annotation found for %T@%v", n, n.Location())
+		return nil, errors.Newf(codes.Internal, "no annotation found for %T@%v", n, n.Location())
 	}
 	if a.Type == nil {
-		return nil, fmt.Errorf("no type annotation found for %T@%v", n, n.Location())
+		return nil, errors.Newf(codes.Internal, "no type annotation found for %T@%v", n, n.Location())
 	}
 	return a.Type, a.Err
 }
@@ -110,7 +113,7 @@ func (v ConstraintGenerator) typeof(n Node) (PolyType, error) {
 	case *ImportDeclaration:
 		pkg, ok := v.importer.Import(n.Path.Value)
 		if !ok {
-			return nil, fmt.Errorf("unknown import path: %q", n.Path.Value)
+			return nil, errors.Newf(codes.NotFound, "unknown import path: %q", n.Path.Value)
 		}
 		// Do not trust imported type variables,
 		// substitute them with fresh vars.
@@ -161,7 +164,7 @@ func (v ConstraintGenerator) typeof(n Node) (PolyType, error) {
 	case *IdentifierExpression:
 		scheme, ok := v.env.Lookup(n.Name)
 		if !ok {
-			return nil, fmt.Errorf("undefined identifier %q", n.Name)
+			return nil, errors.Newf(codes.Invalid, "undefined identifier %q", n.Name)
 		}
 		t := v.cs.Instantiate(scheme, n.Location())
 		return t, nil
@@ -204,7 +207,7 @@ func (v ConstraintGenerator) typeof(n Node) (PolyType, error) {
 			v.cs.AddTypeConst(r, Regexp, n.Location())
 			return Bool, nil
 		default:
-			return nil, fmt.Errorf("unsupported binary operator %v", n.Operator)
+			return nil, errors.Newf(codes.Invalid, "unsupported binary operator %v", n.Operator)
 		}
 	case *LogicalExpression:
 		l, err := v.lookup(n.Left)
@@ -349,12 +352,12 @@ func (v ConstraintGenerator) typeof(n Node) (PolyType, error) {
 			}
 			tv, ok := t.(Tvar)
 			if !ok {
-				return nil, errors.New("object 'with' identifier must be a type variable")
+				return nil, errors.Newf(codes.Internal, "object 'with' identifier must be a type variable")
 			}
 			for _, k := range v.cs.kindConst[tv] {
 				obj, ok := k.(ObjectKind)
 				if !ok {
-					return nil, errors.New("object 'with' identifier must have only object kind constraints")
+					return nil, errors.Newf(codes.Internal, "object 'with' identifier must have only object kind constraints")
 				}
 				if obj.upper.isAllLabels() {
 					continue
@@ -379,8 +382,7 @@ func (v ConstraintGenerator) typeof(n Node) (PolyType, error) {
 		// Retrieve a new type variable for the property
 		// and add a nullable kind constraint to indicate
 		// that the variable can be null.
-		ptv := v.cs.f.Fresh()
-		v.cs.AddKindConst(ptv, NullableKind{T: ptv})
+		v.cs.AddKindConst(nodeVar, NullableKind{T: nodeVar})
 
 		t, err := v.lookup(n.Object)
 		if err != nil {
@@ -388,31 +390,30 @@ func (v ConstraintGenerator) typeof(n Node) (PolyType, error) {
 		}
 		tv, ok := t.(Tvar)
 		if !ok {
-			return nil, errors.New("member object must be a type variable")
+			return nil, errors.Newf(codes.Internal, "member object must be a type variable")
 		}
 		v.cs.AddKindConst(tv, ObjectKind{
-			properties: map[string]PolyType{n.Property: ptv},
+			properties: map[string]PolyType{n.Property: nodeVar},
 			lower:      LabelSet{n.Property},
 			upper:      AllLabels(),
 		})
-		return ptv, nil
+		return nodeVar, nil
 	case *IndexExpression:
-		ptv := v.cs.f.Fresh()
 		t, err := v.lookup(n.Array)
 		if err != nil {
 			return nil, err
 		}
 		tv, ok := t.(Tvar)
 		if !ok {
-			return nil, errors.New("array must be a type variable")
+			return nil, errors.Newf(codes.Internal, "array must be a type variable")
 		}
 		idx, err := v.lookup(n.Index)
 		if err != nil {
 			return nil, err
 		}
-		v.cs.AddKindConst(tv, ArrayKind{ptv})
 		v.cs.AddTypeConst(idx, Int, n.Index.Location())
-		return ptv, nil
+		v.cs.AddTypeConst(tv, array{nodeVar}, n.Location())
+		return nodeVar, nil
 	case *ArrayExpression:
 		elt := v.cs.f.Fresh()
 		at := array{elt}
@@ -423,9 +424,19 @@ func (v ConstraintGenerator) typeof(n Node) (PolyType, error) {
 			}
 			v.cs.AddTypeConst(t, elt, el.Location())
 		}
-		v.cs.AddKindConst(nodeVar, ArrayKind{at.typ})
 		v.cs.AddTypeConst(nodeVar, at, n.Location())
 		return nodeVar, nil
+	case *StringExpression:
+		for _, part := range n.Parts {
+			if p, ok := part.(*InterpolatedPart); ok {
+				t, err := v.lookup(p.Expression)
+				if err != nil {
+					return nil, err
+				}
+				v.cs.AddTypeConst(t, String, p.Location())
+			}
+		}
+		return String, nil
 	case *StringLiteral:
 		return String, nil
 	case *IntegerLiteral:
@@ -454,10 +465,12 @@ func (v ConstraintGenerator) typeof(n Node) (PolyType, error) {
 		*TestStatement,
 		*Identifier,
 		*FunctionParameters,
-		*ExpressionStatement:
+		*ExpressionStatement,
+		*TextPart,
+		*InterpolatedPart:
 		return nil, nil
 	default:
-		return nil, fmt.Errorf("unsupported %T", n)
+		return nil, errors.Newf(codes.Internal, "unsupported %T", n)
 	}
 }
 

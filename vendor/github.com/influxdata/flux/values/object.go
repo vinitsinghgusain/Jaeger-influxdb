@@ -20,7 +20,9 @@ type object struct {
 	labels semantic.LabelSet
 	values []Value
 	ptyp   map[string]semantic.PolyType
+	ptypv  semantic.PolyType
 	mtyp   map[string]semantic.Type
+	mtypv  semantic.Type
 }
 
 func NewObject() *object {
@@ -83,27 +85,54 @@ func (o *object) String() string {
 }
 
 func (o *object) Type() semantic.Type {
-	return semantic.NewObjectType(o.mtyp)
+	if o.mtypv == nil {
+		o.mtypv = semantic.NewObjectType(o.mtyp)
+	}
+	return o.mtypv
 }
 
 func (o *object) PolyType() semantic.PolyType {
-	return semantic.NewObjectPolyType(o.ptyp, nil, o.labels)
+	if o.ptypv == nil {
+		o.ptypv = semantic.NewObjectPolyType(o.ptyp, nil, o.labels)
+	}
+	return o.ptypv
 }
 
 func (o *object) Set(k string, v Value) {
+	// update type
+	pt := v.PolyType()
+	if o.ptypv != nil {
+		if optyp, ok := o.ptyp[k]; !ok || !pt.Equal(optyp) {
+			o.ptyp[k] = pt
+			o.ptypv = nil
+		}
+	} else {
+		o.ptyp[k] = pt
+	}
+	mt := v.Type()
+	if mt == nil {
+		mt = semantic.Invalid
+	}
+	if o.mtypv != nil {
+		if omtyp, ok := o.mtyp[k]; !ok || mt != omtyp {
+			o.mtyp[k] = mt
+			o.mtypv = nil
+		}
+	} else {
+		o.mtyp[k] = mt
+	}
+
+	// update value
 	for i, l := range o.labels {
 		if l == k {
 			o.values[i] = v
-			o.ptyp[l] = v.PolyType()
-			o.mtyp[l] = v.Type()
 			return
 		}
 	}
 	o.labels = append(o.labels, k)
 	o.values = append(o.values, v)
-	o.ptyp[k] = v.PolyType()
-	o.mtyp[k] = v.Type()
 }
+
 func (o *object) Get(name string) (Value, bool) {
 	for i, l := range o.labels {
 		if name == l {
@@ -124,6 +153,9 @@ func (o *object) Range(f func(name string, v Value)) {
 
 func (o *object) Str() string {
 	panic(UnexpectedKind(semantic.Object, semantic.String))
+}
+func (o *object) Bytes() []byte {
+	panic(UnexpectedKind(semantic.Object, semantic.Bytes))
 }
 func (o *object) Int() int64 {
 	panic(UnexpectedKind(semantic.Object, semantic.Int))
@@ -165,7 +197,7 @@ func (o *object) Equal(rhs Value) bool {
 	}
 	for i, l := range o.labels {
 		val, ok := r.Get(l)
-		if !ok && !o.values[i].Equal(val) {
+		if ok && !o.values[i].Equal(val) {
 			return false
 		}
 	}

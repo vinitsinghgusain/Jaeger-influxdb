@@ -8,15 +8,19 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
+	"github.com/apache/arrow/go/arrow/array"
 	"github.com/influxdata/flux"
+	"github.com/influxdata/flux/arrow"
+	"github.com/influxdata/flux/codes"
 	"github.com/influxdata/flux/execute"
+	"github.com/influxdata/flux/internal/errors"
 	"github.com/influxdata/flux/iocounter"
 	"github.com/influxdata/flux/memory"
 	"github.com/influxdata/flux/values"
-	"github.com/pkg/errors"
 )
 
 const (
@@ -71,6 +75,9 @@ type ResultDecoderConfig struct {
 	// MaxBufferCount is the maximum number of rows that will be buffered when decoding.
 	// If 0, then a value of 1000 will be used.
 	MaxBufferCount int
+	// Allocator is the memory allocator that will be used during decoding.
+	// The default is to use an unlimited allocator when this is not set.
+	Allocator *memory.Allocator
 }
 
 func (d *ResultDecoder) Decode(r io.Reader) (flux.Result, error) {
@@ -178,9 +185,11 @@ func newResultDecoder(cr *csv.Reader, c ResultDecoderConfig, extraMeta *tableMet
 		tm, err := readMetadata(d.cr, c, nil)
 		if err != nil {
 			if err == io.EOF {
-				d.eof = true
+				return nil, err
+			} else if sfe, ok := err.(*serializedFluxError); ok {
+				return nil, sfe.err
 			}
-			return nil, err
+			return nil, errors.Wrap(err, codes.Inherit, "failed to read metadata")
 		}
 		d.extraMeta = &tm
 	}
@@ -224,7 +233,10 @@ func (r *resultDecoder) Do(f func(flux.Table) error) error {
 						r.eof = true
 						return nil
 					}
-					return errors.Wrap(err, "failed to read meta data")
+					if sfe, ok := err.(*serializedFluxError); ok {
+						return sfe.err
+					}
+					return errors.Wrap(err, codes.Inherit, "failed to read metadata")
 				}
 				meta = tm
 				extraLine = nil
@@ -265,7 +277,21 @@ type tableMetadata struct {
 	NumFields int
 }
 
+// serializedFluxError represents an error that occurred during
+// Flux execution that has been serialized to CSV.
+type serializedFluxError struct {
+	err error
+}
+
+func (sfe *serializedFluxError) Error() string {
+	return sfe.err.Error()
+}
+
 // readMetadata reads the table annotations and header.
+// If there is no more data, returns (tablMetadata{}, io.EOF).
+// In case of an actual error:
+//   - if it's error that was serialized to CSV, it will be wrapped in serializedFluxError.
+//   - otherwise, it's a serialization error, it will be returned as-is.
 func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tableMetadata, error) {
 	n := -1
 	var resultID, tableID string
@@ -280,7 +306,6 @@ func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tab
 			if err != nil {
 				if err == io.EOF {
 					if datatypes == nil && groups == nil && defaults == nil {
-						// No, just pass the EOF up
 						return tableMetadata{}, err
 					}
 					switch {
@@ -300,7 +325,7 @@ func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tab
 			n = len(line)
 		}
 		if n != len(line) {
-			return tableMetadata{}, errors.Wrap(csv.ErrFieldCount, "failed to read annotations")
+			return tableMetadata{}, errors.Wrap(csv.ErrFieldCount, codes.Invalid, "failed to read annotations")
 		}
 		switch annotation := strings.TrimPrefix(line[annotationIdx], commentPrefix); annotation {
 		case datatypeAnnotation:
@@ -315,7 +340,7 @@ func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tab
 			}
 			defaults = copyLine(line[recordStartIdx:])
 		default:
-			if annotation == "" {
+			if !strings.HasPrefix(line[annotationIdx], commentPrefix) {
 				switch {
 				case datatypes == nil:
 					return tableMetadata{}, fmt.Errorf("missing expected annotation datatype")
@@ -325,7 +350,7 @@ func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tab
 					return tableMetadata{}, fmt.Errorf("missing expected annotation default")
 				}
 			}
-			// Skip extra annotation
+			// Ignore unsupported/unknown annotations.
 		}
 	}
 
@@ -341,12 +366,12 @@ func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tab
 		line, err := r.Read()
 		if err != nil {
 			if err == io.EOF {
-				return tableMetadata{}, errors.New("missing expected header row")
+				return tableMetadata{}, errors.New(codes.Invalid, "missing expected header row")
 			}
 			return tableMetadata{}, err
 		}
 		if n != len(line) {
-			return tableMetadata{}, errors.Wrap(csv.ErrFieldCount, "failed to read header row")
+			return tableMetadata{}, errors.Wrap(csv.ErrFieldCount, codes.Invalid, "failed to read header row")
 		}
 
 		if len(line) > 1 && line[1] == "error" {
@@ -354,13 +379,15 @@ func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tab
 			line, err := r.Read()
 			if err != nil || n != len(line) {
 				if err == io.EOF {
-					err = io.ErrUnexpectedEOF
+					return tableMetadata{}, errors.Wrap(io.ErrUnexpectedEOF, codes.Invalid)
 				} else if err == nil && n != len(line) {
-					err = csv.ErrFieldCount
+					return tableMetadata{}, errors.Wrap(csv.ErrFieldCount, codes.Invalid)
 				}
-				return tableMetadata{}, errors.Wrap(err, "failed to read error value")
+				return tableMetadata{}, errors.Wrap(err, codes.Inherit, "failed to read error value")
 			}
-			return tableMetadata{}, errors.New(line[1])
+			// TODO: We should determine the correct error code here:
+			//   https://github.com/influxdata/flux/issues/1916
+			return tableMetadata{}, &serializedFluxError{err: errors.New(codes.Internal, line[1])}
 		}
 
 		labels = line[recordStartIdx:]
@@ -373,7 +400,7 @@ func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tab
 	for j, label := range labels {
 		t, desc, err := decodeType(datatypes[j])
 		if err != nil {
-			return tableMetadata{}, errors.Wrapf(err, "column %q has invalid datatype", label)
+			return tableMetadata{}, errors.Wrapf(err, codes.Invalid, "column %q has invalid datatype", label)
 		}
 		cols[j].ColMeta.Label = label
 		cols[j].ColMeta.Type = t
@@ -398,7 +425,7 @@ func readMetadata(r *csv.Reader, c ResultDecoderConfig, extraLine []string) (tab
 		} else {
 			v, err := decodeValue(defaults[j], cols[j])
 			if err != nil {
-				return tableMetadata{}, errors.Wrapf(err, "column %q has invalid default value", label)
+				return tableMetadata{}, errors.Wrapf(err, codes.Invalid, "column %q has invalid default value", label)
 			}
 			defaultValues[j] = v
 		}
@@ -421,12 +448,16 @@ type tableDecoder struct {
 
 	meta tableMetadata
 
+	used  int32
+	empty bool
+
 	initialized bool
 	id          string
 
-	builder *execute.ColListTableBuilder
-
-	empty bool
+	key     flux.GroupKey
+	colMeta []flux.ColMeta
+	cols    []array.Builder
+	nrows   int
 
 	done chan struct{}
 
@@ -462,13 +493,17 @@ func newTable(
 }
 
 func (d *tableDecoder) Do(f func(flux.ColReader) error) error {
+	if !atomic.CompareAndSwapInt32(&d.used, 0, 1) {
+		return errors.New(codes.Internal, "table already read")
+	}
+
+	// Ensure that all internal memory is released when we exit.
+	defer d.release()
+
 	// Send off first batch from first advance call.
-	if table, err := d.builder.Table(); err != nil {
-		return err
-	} else if err := table.Do(f); err != nil {
+	if err := d.Emit(f); err != nil {
 		return err
 	}
-	d.builder.ClearData()
 
 	select {
 	case <-d.done:
@@ -484,25 +519,23 @@ func (d *tableDecoder) Do(f func(flux.ColReader) error) error {
 		if err != nil {
 			return err
 		}
-		table, err := d.builder.Table()
-		if err != nil {
-			return err
-		} else if err := table.Do(f); err != nil {
+		if err := d.Emit(f); err != nil {
 			return err
 		}
-		d.builder.ClearData()
 	}
 	return nil
 }
 
-func (d *tableDecoder) Done() {}
+func (d *tableDecoder) Done() {
+	_ = d.Do(func(flux.ColReader) error { return nil })
+}
 
 // advance reads the csv data until the end of the table or bufSize rows have been read.
 // Advance returns whether there is more data and any error.
 func (d *tableDecoder) advance(extraLine []string) (bool, error) {
 	var line, record []string
 	var err error
-	for !d.initialized || d.builder.NRows() < d.c.MaxBufferCount {
+	for !d.initialized || d.nrows < d.c.MaxBufferCount {
 		if len(extraLine) > 0 {
 			line = extraLine
 			extraLine = nil
@@ -561,7 +594,7 @@ DONE:
 				return false, err
 			}
 		} else {
-			return false, errors.New("table was not initialized, missing group key data")
+			return false, errors.New(codes.Internal, "table was not initialized, missing group key data")
 		}
 	}
 	return false, nil
@@ -573,7 +606,7 @@ func (d *tableDecoder) init(line []string) error {
 	} else if d.meta.TableID != "" {
 		d.id = d.meta.TableID
 	} else {
-		return errors.New("missing table ID")
+		return errors.New(codes.Invalid, "missing table ID")
 	}
 	var record []string
 	if len(line) != 0 {
@@ -599,12 +632,17 @@ func (d *tableDecoder) init(line []string) error {
 		}
 	}
 
-	key := execute.NewGroupKey(keyCols, keyValues)
-	d.builder = execute.NewColListTableBuilder(key, newUnlimitedAllocator())
-	for _, c := range d.meta.Cols {
-		_, err := d.builder.AddCol(c.ColMeta)
-		if err != nil {
-			return err
+	d.key = execute.NewGroupKey(keyCols, keyValues)
+	alloc := memory.DefaultAllocator
+	if d.c.Allocator != nil {
+		alloc = d.c.Allocator
+	}
+	if len(d.meta.Cols) > 0 {
+		d.colMeta = make([]flux.ColMeta, len(d.meta.Cols))
+		d.cols = make([]array.Builder, len(d.meta.Cols))
+		for i, c := range d.meta.Cols {
+			d.colMeta[i] = c.ColMeta
+			d.cols[i] = arrow.NewBuilder(c.Type, alloc)
 		}
 	}
 
@@ -616,15 +654,16 @@ func (d *tableDecoder) appendRecord(record []string) error {
 	for j, c := range d.meta.Cols {
 		if record[j] == "" {
 			v := d.meta.Defaults[j]
-			if err := d.builder.AppendValue(j, v); err != nil {
+			if err := arrow.AppendValue(d.cols[j], v); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := decodeValueInto(j, c, record[j], d.builder); err != nil {
+		if err := decodeValueInto(c, record[j], d.cols[j]); err != nil {
 			return err
 		}
 	}
+	d.nrows++
 	return nil
 }
 
@@ -632,23 +671,42 @@ func (d *tableDecoder) Empty() bool {
 	return d.empty
 }
 
-func (d *tableDecoder) RefCount(n int) {}
-
 func (d *tableDecoder) Key() flux.GroupKey {
-	return d.builder.Key()
+	return d.key
 }
 
 func (d *tableDecoder) Cols() []flux.ColMeta {
-	return d.builder.Cols()
+	return d.colMeta
+}
+
+func (d *tableDecoder) Emit(f func(flux.ColReader) error) error {
+	cr := arrow.TableBuffer{
+		GroupKey: d.key,
+		Columns:  d.colMeta,
+		Values:   make([]array.Interface, len(d.cols)),
+	}
+	for i, c := range d.cols {
+		// Creating a new array resets the builder so
+		// we do not have to release the memory or
+		// reinitialize the builder.
+		cr.Values[i] = c.NewArray()
+	}
+	d.nrows = 0
+
+	defer cr.Release()
+	return f(&cr)
+}
+
+func (d *tableDecoder) release() {
+	for _, c := range d.cols {
+		c.Release()
+	}
+	d.cols = nil
 }
 
 type colMeta struct {
 	flux.ColMeta
 	fmt string
-}
-
-func newUnlimitedAllocator() *memory.Allocator {
-	return &memory.Allocator{}
 }
 
 type ResultEncoder struct {
@@ -732,25 +790,26 @@ func (e *ResultEncoder) csvWriter(w io.Writer) *csv.Writer {
 }
 
 type csvEncoderError struct {
-	msg string
+	err error
 }
 
 func (e *csvEncoderError) Error() string {
-	return e.msg
+	return fmt.Sprintf("csv encoder error: %s", e.err.Error())
 }
 
 func (e *csvEncoderError) IsEncoderError() bool {
 	return true
 }
 
-func newCSVEncoderError(msg string) *csvEncoderError {
-	return &csvEncoderError{
-		msg: msg,
-	}
+func (e *csvEncoderError) Unwrap() error {
+	return e.err
 }
 
 func wrapEncodingError(err error) error {
-	return errors.Wrap(newCSVEncoderError(err.Error()), "csv encoder error")
+	if err == nil {
+		return err
+	}
+	return &csvEncoderError{err: err}
 }
 
 func (e *ResultEncoder) Encode(w io.Writer, result flux.Result) (int64, error) {
@@ -823,24 +882,23 @@ func (e *ResultEncoder) Encode(w io.Writer, result flux.Result) (int64, error) {
 			}
 		}
 
-		err := tbl.Do(func(cr flux.ColReader) error {
+		if err := tbl.Do(func(cr flux.ColReader) error {
 			record := row[recordStartIdx:]
 			l := cr.Len()
 			for i := 0; i < l; i++ {
 				for j, c := range cols[recordStartIdx:] {
 					v, err := encodeValueFrom(i, j, c, cr)
 					if err != nil {
-						return err
+						return wrapEncodingError(err)
 					}
 					record[j] = v
 				}
 				writer.Write(row)
 			}
 			writer.Flush()
-			return writer.Error()
-		})
-		if err != nil {
-			return wrapEncodingError(err)
+			return wrapEncodingError(writer.Error())
+		}); err != nil {
+			return err
 		}
 
 		tableID++
@@ -848,11 +906,7 @@ func (e *ResultEncoder) Encode(w io.Writer, result flux.Result) (int64, error) {
 		lastCols = cols
 		lastEmpty = tbl.Empty()
 		writer.Flush()
-		err = writer.Error()
-		if err != nil {
-			return wrapEncodingError(err)
-		}
-		return nil
+		return wrapEncodingError(writer.Error())
 	})
 	return writeCounter.Count(), err
 }
@@ -1041,40 +1095,40 @@ func decodeValue(value string, c colMeta) (values.Value, error) {
 	return val, nil
 }
 
-func decodeValueInto(j int, c colMeta, value string, builder execute.TableBuilder) error {
+func decodeValueInto(c colMeta, value string, b array.Builder) error {
 	switch c.Type {
 	case flux.TBool:
 		v, err := strconv.ParseBool(value)
 		if err != nil {
 			return err
 		}
-		return builder.AppendBool(j, v)
+		return arrow.AppendBool(b, v)
 	case flux.TInt:
 		v, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
 			return err
 		}
-		return builder.AppendInt(j, v)
+		return arrow.AppendInt(b, v)
 	case flux.TUInt:
 		v, err := strconv.ParseUint(value, 10, 64)
 		if err != nil {
 			return err
 		}
-		return builder.AppendUInt(j, v)
+		return arrow.AppendUint(b, v)
 	case flux.TFloat:
 		v, err := strconv.ParseFloat(value, 64)
 		if err != nil {
 			return err
 		}
-		return builder.AppendFloat(j, v)
+		return arrow.AppendFloat(b, v)
 	case flux.TString:
-		return builder.AppendString(j, value)
+		return arrow.AppendString(b, value)
 	case flux.TTime:
 		t, err := decodeTime(value, c.fmt)
 		if err != nil {
 			return err
 		}
-		return builder.AppendTime(j, t)
+		return arrow.AppendTime(b, t)
 	default:
 		return fmt.Errorf("unsupported type %v", c.Type)
 	}

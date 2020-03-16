@@ -7,12 +7,26 @@ import (
 	"time"
 )
 
-// BucketType defines known system-buckets.
-type BucketType int
-
 const (
-	// BucketTypeLogs defines the bucket ID of the system logs.
-	BucketTypeLogs = BucketType(iota + 10)
+	// TasksSystemBucketID is the fixed ID for our tasks system bucket
+	TasksSystemBucketID = ID(10)
+	// MonitoringSystemBucketID is the fixed ID for our monitoring system bucket
+	MonitoringSystemBucketID = ID(11)
+
+	// BucketTypeUser is a user created bucket
+	BucketTypeUser = BucketType(0)
+	// BucketTypeSystem is an internally created bucket that cannot be deleted/renamed.
+	BucketTypeSystem = BucketType(1)
+	// MonitoringSystemBucketRetention is the time we should retain monitoring system bucket information
+	MonitoringSystemBucketRetention = time.Hour * 24 * 7
+	// TasksSystemBucketRetention is the time we should retain task system bucket information
+	TasksSystemBucketRetention = time.Hour * 24 * 3
+)
+
+// Bucket names constants
+const (
+	TasksSystemBucketName      = "_tasks"
+	MonitoringSystemBucketName = "_monitoring"
 )
 
 // InfiniteRetention is default infinite retention period.
@@ -22,11 +36,31 @@ const InfiniteRetention = 0
 type Bucket struct {
 	ID                  ID            `json:"id,omitempty"`
 	OrgID               ID            `json:"orgID,omitempty"`
+	Type                BucketType    `json:"type"`
 	Name                string        `json:"name"`
 	Description         string        `json:"description"`
 	RetentionPolicyName string        `json:"rp,omitempty"` // This to support v1 sources
 	RetentionPeriod     time.Duration `json:"retentionPeriod"`
 	CRUDLog
+}
+
+// BucketType differentiates system buckets from user buckets.
+type BucketType int
+
+// String converts a BucketType into a human-readable string.
+func (bt BucketType) String() string {
+	if bt == BucketTypeSystem {
+		return "system"
+	}
+	return "user"
+}
+
+// ParseBucketType parses a bucket type from a string
+func ParseBucketType(s string) BucketType {
+	if s == "system" {
+		return BucketTypeSystem
+	}
+	return BucketTypeUser
 }
 
 // ops for buckets error and buckets op logs.
@@ -35,6 +69,7 @@ var (
 	OpFindBucket     = "FindBucket"
 	OpFindBuckets    = "FindBuckets"
 	OpCreateBucket   = "CreateBucket"
+	OpPutBucket      = "PutBucket"
 	OpUpdateBucket   = "UpdateBucket"
 	OpDeleteBucket   = "DeleteBucket"
 )
@@ -60,6 +95,7 @@ type BucketService interface {
 
 	// DeleteBucket removes a bucket by ID.
 	DeleteBucket(ctx context.Context, id ID) error
+	FindBucketByName(ctx context.Context, orgID ID, name string) (*Bucket, error)
 }
 
 // BucketUpdate represents updates to a bucket.
@@ -120,7 +156,11 @@ func (f BucketFilter) String() string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
-// InternalBucketID returns the ID for an organization's specified internal bucket
-func InternalBucketID(t BucketType) (*ID, error) {
-	return IDFromString(fmt.Sprintf("%d", t))
+func ErrInternalBucketServiceError(op string, err error) *Error {
+	return &Error{
+		Code: EInternal,
+		Msg:  fmt.Sprintf("unexpected error in buckets; Err: %v", err),
+		Op:   op,
+		Err:  err,
+	}
 }

@@ -5,24 +5,27 @@ cd $DIR
 
 set -e
 
-# Ensure that the GITHUB_TOKEN is exposed in the environment.
-if ! env | grep GITHUB_TOKEN= > /dev/null; then
-  echo "GITHUB_TOKEN must be exported in the environment to perform a release." 2>&1
-  exit 1
+remote=$(git rev-parse "@{u}") # "@{u}" gets the current upstream branch
+local=$(git rev-parse @) # '@' gets the current local branch
+
+# check if local commit syncs with remote
+if [ "$remote" != "$local" ]; then
+    echo "Error: local commit does not match remote. Exiting release script."
+    exit 1
 fi
 
-# Run git fetch to ensure that the origin is updated.
-git fetch
+# remove any excess brackets, space/tab characters and 'origin' branch and sort the tags
+git_remote_tags () { git ls-remote --tags origin | grep -v '{}' | sort | tr -d [[:blank:]] ; }
+git_local_tags () { git show-ref --tags | grep -v '{}' | grep -v 'origin'| grep -v 'list'| sort | tr -d [[:blank:]] ; }
 
-# Ensure that the maint branch is included in this release.
-if ! git merge-base --is-ancestor origin/maint HEAD; then
-  echo "maint branch has not been merged into $(git rev-parse --abbrev-ref HEAD)." 2>&1
-  exit 1
+# check if local tags are different from remote tags
+if ! diff -q <(git_remote_tags) <(git_local_tags) &>/dev/null; then
+    echo "Error: local tags do not match remote. Exiting release script."
+    exit 1
 fi
 
-export GO111MODULE=on
+# cut the next Flux release
+version=$(./gotool.sh github.com/influxdata/changelog nextver)
+git tag -s -m "Release $version" "$version"
+git push origin "$version"
 
-version=$(go run ./internal/cmd/changelog nextver)
-git tag -s -m "Release $version" $version
-git push origin "$version" "HEAD:maint"
-go run github.com/goreleaser/goreleaser release --rm-dist --release-notes <(go run ./internal/cmd/changelog generate --version $version --commit-url https://github.com/influxdata/flux/commit)

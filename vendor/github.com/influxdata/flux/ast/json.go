@@ -52,14 +52,14 @@ func (f *File) UnmarshalJSON(data []byte) error {
 	}
 	return nil
 }
-func (p *PackageClause) MarshalJSON() ([]byte, error) {
+func (c *PackageClause) MarshalJSON() ([]byte, error) {
 	type Alias PackageClause
 	raw := struct {
 		Type string `json:"type"`
 		*Alias
 	}{
-		Type:  p.Type(),
-		Alias: (*Alias)(p),
+		Type:  c.Type(),
+		Alias: (*Alias)(c),
 	}
 	return json.Marshal(raw)
 }
@@ -266,18 +266,18 @@ func (d *VariableAssignment) UnmarshalJSON(data []byte) error {
 	d.Init = e
 	return nil
 }
-func (s *MemberAssignment) MarshalJSON() ([]byte, error) {
+func (a *MemberAssignment) MarshalJSON() ([]byte, error) {
 	type Alias MemberAssignment
 	raw := struct {
 		Type string `json:"type"`
 		*Alias
 	}{
-		Type:  s.Type(),
-		Alias: (*Alias)(s),
+		Type:  a.Type(),
+		Alias: (*Alias)(a),
 	}
 	return json.Marshal(raw)
 }
-func (s *MemberAssignment) UnmarshalJSON(data []byte) error {
+func (a *MemberAssignment) UnmarshalJSON(data []byte) error {
 	type Alias MemberAssignment
 	raw := struct {
 		*Alias
@@ -287,14 +287,14 @@ func (s *MemberAssignment) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if raw.Alias != nil {
-		*s = *(*MemberAssignment)(raw.Alias)
+		*a = *(*MemberAssignment)(raw.Alias)
 	}
 
 	e, err := unmarshalExpression(raw.Init)
 	if err != nil {
 		return err
 	}
-	s.Init = e
+	a.Init = e
 	return nil
 }
 func (e *CallExpression) MarshalJSON() ([]byte, error) {
@@ -328,13 +328,15 @@ func (e *CallExpression) UnmarshalJSON(data []byte) error {
 	}
 	e.Callee = callee
 
-	e.Arguments = make([]Expression, len(raw.Arguments))
-	for i, r := range raw.Arguments {
-		expr, err := unmarshalExpression(r)
-		if err != nil {
-			return err
+	if len(raw.Arguments) > 0 {
+		e.Arguments = make([]Expression, len(raw.Arguments))
+		for i, r := range raw.Arguments {
+			expr, err := unmarshalExpression(r)
+			if err != nil {
+				return err
+			}
+			e.Arguments[i] = expr
 		}
-		e.Arguments[i] = expr
 	}
 	return nil
 }
@@ -587,6 +589,128 @@ func (e *LogicalExpression) UnmarshalJSON(data []byte) error {
 	e.Right = r
 	return nil
 }
+func (e *StringExpression) MarshalJSON() ([]byte, error) {
+	type Alias StringExpression
+	raw := struct {
+		Type string `json:"type"`
+		*Alias
+	}{
+		Type:  e.Type(),
+		Alias: (*Alias)(e),
+	}
+	return json.Marshal(raw)
+}
+func (e *StringExpression) UnmarshalJSON(data []byte) error {
+	type Alias StringExpression
+	raw := struct {
+		*Alias
+		Parts []json.RawMessage `json:"parts"`
+	}{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.Alias != nil {
+		*e = *(*StringExpression)(raw.Alias)
+	}
+
+	e.Parts = make([]StringExpressionPart, len(raw.Parts))
+	for i, r := range raw.Parts {
+		part, err := unmarshalStringPart(r)
+		if err != nil {
+			return err
+		}
+		e.Parts[i] = part
+	}
+	return nil
+}
+func (p *TextPart) MarshalJSON() ([]byte, error) {
+	type Alias TextPart
+	raw := struct {
+		Type string `json:"type"`
+		*Alias
+	}{
+		Type:  p.Type(),
+		Alias: (*Alias)(p),
+	}
+	return json.Marshal(raw)
+}
+func (p *TextPart) UnmarshalJSON(data []byte) error {
+	type Alias TextPart
+	raw := struct {
+		*Alias
+		Value string `json:"value"`
+	}{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.Alias != nil {
+		*p = *(*TextPart)(raw.Alias)
+	}
+	p.Value = raw.Value
+	return nil
+}
+func (p *InterpolatedPart) MarshalJSON() ([]byte, error) {
+	type Alias InterpolatedPart
+	raw := struct {
+		Type string `json:"type"`
+		*Alias
+	}{
+		Type:  p.Type(),
+		Alias: (*Alias)(p),
+	}
+	return json.Marshal(raw)
+}
+func (p *InterpolatedPart) UnmarshalJSON(data []byte) error {
+	type Alias InterpolatedPart
+	raw := struct {
+		*Alias
+		Expression json.RawMessage `json:"expression"`
+	}{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.Alias != nil {
+		*p = *(*InterpolatedPart)(raw.Alias)
+	}
+
+	expr, err := unmarshalExpression(raw.Expression)
+	if err != nil {
+		return err
+	}
+	p.Expression = expr
+	return nil
+}
+func (e *ParenExpression) MarshalJSON() ([]byte, error) {
+	type Alias ParenExpression
+	raw := struct {
+		Type string `json:"type"`
+		*Alias
+	}{
+		Type:  e.Type(),
+		Alias: (*Alias)(e),
+	}
+	return json.Marshal(raw)
+}
+func (e *ParenExpression) UnmarshalJSON(data []byte) error {
+	type Alias ParenExpression
+	raw := struct {
+		*Alias
+		Expression json.RawMessage `json:"expression"`
+	}{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.Alias != nil {
+		*e = *(*ParenExpression)(raw.Alias)
+	}
+
+	expr, err := unmarshalExpression(raw.Expression)
+	if err != nil {
+		return err
+	}
+	e.Expression = expr
+	return nil
+}
 func (e *ArrayExpression) MarshalJSON() ([]byte, error) {
 	type Alias ArrayExpression
 	raw := struct {
@@ -728,14 +852,14 @@ func (i *Identifier) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(raw)
 }
-func (l *PipeLiteral) MarshalJSON() ([]byte, error) {
+func (p *PipeLiteral) MarshalJSON() ([]byte, error) {
 	type Alias PipeLiteral
 	raw := struct {
 		Type string `json:"type"`
 		*Alias
 	}{
-		Type:  l.Type(),
-		Alias: (*Alias)(l),
+		Type:  p.Type(),
+		Alias: (*Alias)(p),
 	}
 	return json.Marshal(raw)
 }
@@ -929,6 +1053,10 @@ func unmarshalExpression(msg json.RawMessage) (Expression, error) {
 	if err != nil {
 		return nil, err
 	}
+	if n == nil {
+		// If both n and err are nil, then this is a BadExpression, just return nil.
+		return nil, nil
+	}
 	e, ok := n.(Expression)
 	if !ok {
 		return nil, fmt.Errorf("node %q is not an expression", n.Type())
@@ -962,6 +1090,20 @@ func unmarshalPropertyKey(msg json.RawMessage) (PropertyKey, error) {
 		return nil, fmt.Errorf("node %q is not a property key", n.Type())
 	}
 	return k, nil
+}
+func unmarshalStringPart(msg json.RawMessage) (StringExpressionPart, error) {
+	if checkNullMsg(msg) {
+		return nil, nil
+	}
+	n, err := unmarshalNode(msg)
+	if err != nil {
+		return nil, err
+	}
+	p, ok := n.(StringExpressionPart)
+	if !ok {
+		return nil, fmt.Errorf("node %q is not a string expression part", n.Type())
+	}
+	return p, nil
 }
 func unmarshalNode(msg json.RawMessage) (Node, error) {
 	if checkNullMsg(msg) {
@@ -1029,6 +1171,14 @@ func unmarshalNode(msg json.RawMessage) (Node, error) {
 		node = new(Identifier)
 	case "PipeLiteral":
 		node = new(PipeLiteral)
+	case "StringExpression":
+		node = new(StringExpression)
+	case "TextPart":
+		node = new(TextPart)
+	case "InterpolatedPart":
+		node = new(InterpolatedPart)
+	case "ParenExpression":
+		node = new(ParenExpression)
 	case "StringLiteral":
 		node = new(StringLiteral)
 	case "BooleanLiteral":
@@ -1049,6 +1199,11 @@ func unmarshalNode(msg json.RawMessage) (Node, error) {
 		node = new(FunctionExpression)
 	case "Property":
 		node = new(Property)
+	case "BadExpression":
+		// Rust does not support plain nil if not using Options.
+		// The places where we use BadExpressions in the Rust parser
+		// are all just nil nodes in the Go parser.
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown type %q", typ.Type)
 	}

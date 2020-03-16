@@ -2,16 +2,21 @@ package lang
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/ast"
+	"github.com/influxdata/flux/codes"
 	"github.com/influxdata/flux/execute"
+	"github.com/influxdata/flux/internal/errors"
 	"github.com/influxdata/flux/internal/spec"
 	"github.com/influxdata/flux/memory"
 	"github.com/influxdata/flux/plan"
-	"github.com/pkg/errors"
+	"github.com/influxdata/flux/semantic"
+	"github.com/influxdata/flux/values"
+	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 )
 
@@ -113,13 +118,16 @@ func CompileAST(astPkg *ast.Package, now time.Time, opts ...CompileOption) *AstP
 
 // CompileTableObject evaluates a TableObject and produces a flux.Program.
 // now parameter must be non-zero, that is the default now time should be set before compiling.
-func CompileTableObject(to *flux.TableObject, now time.Time, opts ...CompileOption) (*Program, error) {
+func CompileTableObject(ctx context.Context, to *flux.TableObject, now time.Time, opts ...CompileOption) (*Program, error) {
 	o := applyOptions(opts...)
-	s := spec.FromTableObject(to, now)
+	s, err := spec.FromTableObject(ctx, to, now)
+	if err != nil {
+		return nil, err
+	}
 	if o.verbose {
 		log.Println("Query Spec: ", flux.Formatted(s, flux.FmtJSON))
 	}
-	ps, err := buildPlan(s, o)
+	ps, err := buildPlan(context.Background(), s, o)
 	if err != nil {
 		return nil, err
 	}
@@ -129,17 +137,9 @@ func CompileTableObject(to *flux.TableObject, now time.Time, opts ...CompileOpti
 	}, nil
 }
 
-func WalkIR(astPkg *ast.Package, f func(o *flux.Operation) error) error {
-
-	if spec, err := spec.FromAST(context.Background(), astPkg, time.Now()); err != nil {
-		return err
-	} else {
-		return spec.Walk(f)
-	}
-
-}
-
-func buildPlan(spec *flux.Spec, opts *compileOptions) (*plan.Spec, error) {
+func buildPlan(ctx context.Context, spec *flux.Spec, opts *compileOptions) (*plan.Spec, error) {
+	s, _ := opentracing.StartSpanFromContext(ctx, "plan")
+	defer s.Finish()
 	pb := plan.PlannerBuilder{}
 
 	planOptions := opts.planOptions
@@ -207,30 +207,24 @@ type TableObjectCompiler struct {
 
 func (c *TableObjectCompiler) Compile(ctx context.Context) (flux.Program, error) {
 	// Ignore context, it will be provided upon Program Start.
-	return CompileTableObject(c.Tables, c.Now)
+	return CompileTableObject(ctx, c.Tables, c.Now)
 }
 
 func (*TableObjectCompiler) CompilerType() flux.CompilerType {
 	panic("TableObjectCompiler is not associated with a CompilerType")
 }
 
-type DependenciesAwareProgram interface {
-	SetExecutorDependencies(execute.Dependencies)
+type LoggingProgram interface {
 	SetLogger(logger *zap.Logger)
 }
 
 // Program implements the flux.Program interface.
 // It will execute a compiled plan using an executor.
 type Program struct {
-	Dependencies execute.Dependencies
-	Logger       *zap.Logger
-	PlanSpec     *plan.Spec
+	Logger   *zap.Logger
+	PlanSpec *plan.Spec
 
 	opts *compileOptions
-}
-
-func (p *Program) SetExecutorDependencies(deps execute.Dependencies) {
-	p.Dependencies = deps
 }
 
 func (p *Program) SetLogger(logger *zap.Logger) {
@@ -239,25 +233,30 @@ func (p *Program) SetLogger(logger *zap.Logger) {
 
 func (p *Program) Start(ctx context.Context, alloc *memory.Allocator) (flux.Query, error) {
 	ctx, cancel := context.WithCancel(ctx)
+
+	// This span gets closed by the query when it is done.
+	s, cctx := opentracing.StartSpanFromContext(ctx, "execute")
 	results := make(chan flux.Result)
 	q := &query{
 		results: results,
 		alloc:   alloc,
+		span:    s,
 		cancel:  cancel,
 		stats: flux.Statistics{
 			Metadata: make(flux.Metadata),
 		},
 	}
 
-	e := execute.NewExecutor(p.Dependencies, p.Logger)
-	resultMap, md, err := e.Execute(ctx, p.PlanSpec, q.alloc)
+	e := execute.NewExecutor(p.Logger)
+	resultMap, md, err := e.Execute(cctx, p.PlanSpec, q.alloc)
 	if err != nil {
+		s.Finish()
 		return nil, err
 	}
 
 	// There was no error so send the results downstream.
 	q.wg.Add(1)
-	go p.processResults(ctx, q, resultMap)
+	go p.processResults(cctx, q, resultMap)
 
 	// Begin reading from the metadata channel.
 	q.wg.Add(1)
@@ -296,34 +295,165 @@ type AstProgram struct {
 	Now time.Time
 }
 
-func (p *AstProgram) Start(ctx context.Context, alloc *memory.Allocator) (flux.Query, error) {
+func (p *AstProgram) getSpec(ctx context.Context, alloc *memory.Allocator) (*flux.Spec, values.Scope, error) {
 	if p.opts == nil {
 		p.opts = defaultOptions()
 	}
-
 	if p.Now.IsZero() {
 		p.Now = time.Now()
 	}
-
-	astPkg := p.Ast
 	if p.opts.extern != nil {
-		// Duplicate the package so we can safely add the external files.
-		astPkg = astPkg.Copy().(*ast.Package)
-		astPkg.Files = append([]*ast.File{p.opts.extern}, astPkg.Files...)
+		p.Ast.Files = append([]*ast.File{p.opts.extern}, p.Ast.Files...)
 	}
+	// The program must inject execution dependencies to make it available
+	// to function calls during the evaluation phase (see `tableFind`).
+	deps := ExecutionDependencies{
+		Allocator: alloc,
+		Logger:    p.Logger,
+	}
+	ctx = deps.Inject(ctx)
+	s, cctx := opentracing.StartSpanFromContext(ctx, "eval")
+	sideEffects, scope, err := flux.EvalAST(cctx, p.Ast, flux.SetNowOption(p.Now))
+	if err != nil {
+		return nil, nil, err
+	}
+	s.Finish()
 
-	s, err := spec.FromAST(ctx, astPkg, p.Now)
-	if err != nil {
-		return nil, errors.Wrap(err, "error in evaluating AST while starting program")
+	s, cctx = opentracing.StartSpanFromContext(ctx, "compile")
+	defer s.Finish()
+	nowOpt, ok := scope.Lookup(flux.NowOption)
+	if !ok {
+		return nil, nil, fmt.Errorf("%q option not set", flux.NowOption)
 	}
+	nowTime, err := nowOpt.Function().Call(ctx, nil)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, codes.Inherit, "error in evaluating AST while starting program")
+	}
+	p.Now = nowTime.Time().Time()
+	sp, err := spec.FromEvaluation(cctx, sideEffects, p.Now)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, codes.Inherit, "error in query specification while starting program")
+	}
+	return sp, scope, nil
+}
+
+func (p *AstProgram) Start(ctx context.Context, alloc *memory.Allocator) (flux.Query, error) {
+	sp, scope, err := p.getSpec(ctx, alloc)
+	if err != nil {
+		return nil, err
+	}
+	s, cctx := opentracing.StartSpanFromContext(ctx, "plan")
 	if p.opts.verbose {
-		log.Println("Query Spec: ", flux.Formatted(s, flux.FmtJSON))
+		log.Println("Query Spec: ", flux.Formatted(sp, flux.FmtJSON))
 	}
-	ps, err := buildPlan(s, p.opts)
+	if err := p.updateOpts(scope); err != nil {
+		return nil, errors.Wrap(err, codes.Inherit, "error in reading options while starting program")
+	}
+	ps, err := buildPlan(cctx, sp, p.opts)
 	if err != nil {
-		return nil, errors.Wrap(err, "error in building plan while starting program")
+		return nil, errors.Wrap(err, codes.Inherit, "error in building plan while starting program")
 	}
 	p.PlanSpec = ps
+	s.Finish()
 
-	return p.Program.Start(ctx, alloc)
+	s, cctx = opentracing.StartSpanFromContext(ctx, "start-program")
+	defer s.Finish()
+	return p.Program.Start(cctx, alloc)
+}
+
+func (p *AstProgram) updateOpts(scope values.Scope) error {
+	n := getPlannerPkgName(p.Ast)
+	if n == "" {
+		// No import for 'planner'. Nothing to update.
+		return nil
+	}
+	lo, po, err := getPlanOptions(scope, n)
+	if err != nil {
+		return err
+	}
+	if lo != nil {
+		p.opts.planOptions.logical = append(p.opts.planOptions.logical, lo)
+	}
+	if po != nil {
+		p.opts.planOptions.physical = append(p.opts.planOptions.physical, po)
+	}
+	return nil
+}
+
+func getPlannerPkgName(pkg *ast.Package) string {
+	for _, f := range pkg.Files {
+		for _, imp := range f.Imports {
+			if path := imp.Path.Value; path == "planner" {
+				name := path
+				if alias := imp.As; alias != nil {
+					name = alias.Name
+				}
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func getPlanOptions(scope values.Scope, pkgName string) (plan.LogicalOption, plan.PhysicalOption, error) {
+	// find the 'planner' package
+	plannerPkg, ok := scope.Lookup(pkgName)
+	if !ok {
+		// No import for planner, this is useless.
+		return nil, nil, nil
+	}
+	if plannerPkg.Type().Nature() != semantic.Object {
+		// No import for planner, this is useless.
+		return nil, nil, nil
+	}
+
+	ls, err := getRules(plannerPkg.Object(), "disableLogicalRules")
+	if err != nil {
+		return nil, nil, err
+	}
+	ps, err := getRules(plannerPkg.Object(), "disablePhysicalRules")
+	if err != nil {
+		return nil, nil, err
+	}
+	return plan.RemoveLogicalRules(ls...), plan.RemovePhysicalRules(ps...), nil
+}
+
+func getRules(plannerPkg values.Object, optionName string) ([]string, error) {
+	value, ok := plannerPkg.Get(optionName)
+	if !ok {
+		// No value in package.
+		return []string{}, nil
+	}
+
+	// TODO(affo): the rules are arrays of strings as defined in the 'planner' package.
+	//  During evaluation, the interpreter should raise an error if the user tries to assign
+	//  an option of a type to another. So we should be able to rely on the fact that the type
+	//  for value is fixed. At the moment is it not so.
+	//  So, we have to check and return an error to avoid a panic.
+	//  See (https://github.com/influxdata/flux/issues/1829).
+	if t := value.Type().Nature(); t != semantic.Array {
+		return nil, fmt.Errorf("'planner.%s' must be an array of string, got %s", optionName, t.String())
+	}
+	rules := value.Array()
+	if et := rules.Type().ElementType().Nature(); et != semantic.String {
+		return nil, fmt.Errorf("'planner.%s' must be an array of string, got an array of %s", optionName, et.String())
+	}
+	noRules := rules.Len()
+	rs := make([]string, noRules)
+	rules.Range(func(i int, v values.Value) {
+		rs[i] = v.Str()
+	})
+	return rs, nil
+}
+
+// WalkIR applies the function `f` to each operation in the compiled spec.
+// WARNING: this function evaluates the AST using an unlimited allocator.
+// In case of dynamic queries this could lead to unexpected memory usage.
+func WalkIR(ctx context.Context, astPkg *ast.Package, f func(o *flux.Operation) error) error {
+	p := CompileAST(astPkg, time.Now())
+	if sp, _, err := p.getSpec(ctx, new(memory.Allocator)); err != nil {
+		return err
+	} else {
+		return sp.Walk(f)
+	}
 }

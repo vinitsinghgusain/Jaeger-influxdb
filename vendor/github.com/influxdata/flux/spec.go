@@ -1,10 +1,10 @@
 package flux
 
 import (
-	"fmt"
 	"time"
 
-	"github.com/pkg/errors"
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 )
 
 // Spec specifies a query.
@@ -46,7 +46,7 @@ func (q *Spec) Walk(f func(o *Operation) error) error {
 // Validate ensures the query is a valid DAG.
 func (q *Spec) Validate() error {
 	if q.Now.IsZero() {
-		return errors.New("now time must be set")
+		return errors.New(codes.Invalid, "now time must be set")
 	}
 	return q.prepare()
 }
@@ -85,7 +85,7 @@ func (q *Spec) prepare() error {
 		return err
 	}
 	if len(roots) == 0 {
-		return errors.New("query has no root nodes")
+		return errors.New(codes.Invalid, "query has no root nodes")
 	}
 
 	q.parents = parents
@@ -110,7 +110,7 @@ func (q *Spec) computeLookup() (map[OperationID]*Operation, error) {
 	lookup := make(map[OperationID]*Operation, len(q.Operations))
 	for _, o := range q.Operations {
 		if _, ok := lookup[o.ID]; ok {
-			return nil, fmt.Errorf("found duplicate operation ID %q", o.ID)
+			return nil, errors.Newf(codes.Internal, "found duplicate operation ID %q", o.ID)
 		}
 		lookup[o.ID] = o
 	}
@@ -128,14 +128,14 @@ func (q *Spec) determineParentsChildrenAndRoots() (parents, children map[Operati
 		// Build children map
 		c, ok := lookup[e.Child]
 		if !ok {
-			return nil, nil, nil, fmt.Errorf("edge references unknown child operation %q", e.Child)
+			return nil, nil, nil, errors.Newf(codes.Internal, "edge references unknown child operation %q", e.Child)
 		}
 		children[e.Parent] = append(children[e.Parent], c)
 
 		// Build parents map
 		p, ok := lookup[e.Parent]
 		if !ok {
-			return nil, nil, nil, fmt.Errorf("edge references unknown parent operation %q", e.Parent)
+			return nil, nil, nil, errors.Newf(codes.Internal, "edge references unknown parent operation %q", e.Parent)
 		}
 		parents[e.Child] = append(parents[e.Child], p)
 	}
@@ -153,7 +153,7 @@ func (q *Spec) determineParentsChildrenAndRoots() (parents, children map[Operati
 func (q *Spec) visit(tMarks, pMarks map[OperationID]bool, o *Operation) error {
 	id := o.ID
 	if tMarks[id] {
-		return errors.New("found cycle in query")
+		return errors.New(codes.Invalid, "found cycle in query")
 	}
 
 	if !pMarks[id] {

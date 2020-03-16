@@ -1,3 +1,4 @@
+// Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,6 +27,11 @@ const (
 	SampledFlag = Flags(1)
 	// DebugFlag is the bit set in Flags in order to define a span as a debug span
 	DebugFlag = Flags(2)
+	// FirehoseFlag is the bit in Flags in order to define a span as a firehose span
+	FirehoseFlag = Flags(8)
+
+	samplerType        = "sampler.type"
+	samplerTypeUnknown = "unknown"
 )
 
 // Flags is a bit map of flags for a span
@@ -45,6 +51,26 @@ func (s *Span) HasSpanKind(kind ext.SpanKindEnum) bool {
 		return tag.AsString() == string(kind)
 	}
 	return false
+}
+
+// GetSpanKind returns value of `span.kind` tag and whether the tag can be found
+func (s *Span) GetSpanKind() (spanKind string, found bool) {
+	if tag, ok := KeyValues(s.Tags).FindByKey(string(ext.SpanKind)); ok {
+		return tag.AsString(), true
+	}
+	return "", false
+}
+
+// GetSamplerType returns the sampler type for span
+func (s *Span) GetSamplerType() string {
+	// There's no corresponding opentracing-go tag label corresponding to sampler.type
+	if tag, ok := KeyValues(s.Tags).FindByKey(samplerType); ok {
+		if tag.VStr == "" {
+			return samplerTypeUnknown
+		}
+		return tag.VStr
+	}
+	return samplerTypeUnknown
 }
 
 // IsRPCClient returns true if the span represents a client side of an RPC,
@@ -104,6 +130,11 @@ func (f *Flags) SetDebug() {
 	f.setFlags(DebugFlag)
 }
 
+// SetFirehose set the Flags as firehose enabled
+func (f *Flags) SetFirehose() {
+	f.setFlags(FirehoseFlag)
+}
+
 func (f *Flags) setFlags(bit Flags) {
 	*f = *f | bit
 }
@@ -117,6 +148,12 @@ func (f Flags) IsSampled() bool {
 // Debugging can be useful in testing tracing availability or correctness
 func (f Flags) IsDebug() bool {
 	return f.checkFlags(DebugFlag)
+}
+
+// IsFirehoseEnabled returns true if firehose is enabled
+// Firehose is used to decide whether to index a span or not
+func (f Flags) IsFirehoseEnabled() bool {
+	return f.checkFlags(FirehoseFlag)
 }
 
 func (f Flags) checkFlags(bit Flags) bool {

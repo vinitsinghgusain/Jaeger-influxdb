@@ -1,23 +1,28 @@
 package compiler
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"regexp"
+	"strings"
 
 	"github.com/influxdata/flux/ast"
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 	"github.com/influxdata/flux/semantic"
 	"github.com/influxdata/flux/values"
-	"github.com/pkg/errors"
 )
 
 type Func interface {
+	FunctionSignature() semantic.FunctionSignature
 	Type() semantic.Type
-	Eval(input values.Object) (values.Value, error)
+	Eval(ctx context.Context, input values.Object) (values.Value, error)
 }
 
 type Evaluator interface {
 	Type() semantic.Type
-	Eval(scope Scope) (values.Value, error)
+	Eval(ctx context.Context, scope Scope) (values.Value, error)
 }
 
 type compiledFn struct {
@@ -30,11 +35,11 @@ func (c compiledFn) validate(input values.Object) error {
 	sig := c.fnType.FunctionSignature()
 	properties := input.Type().Properties()
 	if len(properties) != len(sig.Parameters) {
-		return errors.New("mismatched parameters and properties")
+		return errors.New(codes.Invalid, "mismatched parameters and properties")
 	}
 	for k, v := range sig.Parameters {
 		if !values.AssignableTo(properties[k], v) {
-			return fmt.Errorf("parameter %q has the wrong type, expected %v got %v", k, v, properties[k])
+			return errors.Newf(codes.Invalid, "parameter %q has the wrong type, expected %v got %v", k, v, properties[k])
 		}
 	}
 	return nil
@@ -45,53 +50,66 @@ func (c compiledFn) buildScope(input values.Object) error {
 		return err
 	}
 	input.Range(func(k string, v values.Value) {
-		c.inputScope[k] = v
+		c.inputScope.Set(k, v)
 	})
 	return nil
+}
+
+func (c compiledFn) FunctionSignature() semantic.FunctionSignature {
+	return c.fnType.FunctionSignature()
 }
 
 func (c compiledFn) Type() semantic.Type {
 	return c.fnType.FunctionSignature().Return
 }
 
-func (c compiledFn) Eval(input values.Object) (values.Value, error) {
+func (c compiledFn) Eval(ctx context.Context, input values.Object) (values.Value, error) {
 	if err := c.buildScope(input); err != nil {
 		return nil, err
 	}
 
-	return eval(c.root, c.inputScope)
+	return eval(ctx, c.root, c.inputScope)
 }
 
-type Scope map[string]values.Value
+type Scope interface {
+	values.Scope
+	Get(name string) values.Value
+}
 
-func (s Scope) Type(name string) semantic.Type {
-	return s[name].Type()
+type compilerScope struct {
+	values.Scope
 }
-func (s Scope) Set(name string, v values.Value) {
-	s[name] = v
-}
-func (s Scope) Get(name string) values.Value {
-	v := s[name]
-	if v == nil {
-		panic("attempting to access non-existant value")
+
+func (s compilerScope) Get(name string) values.Value {
+	v, ok := s.Scope.Lookup(name)
+	if !ok {
+		log.Println("Scope", values.FormattedScope(s.Scope))
+		panic(fmt.Sprintf("attempting to access non-existant value %q", name))
 	}
 	return v
 }
 
-func (s Scope) Copy() Scope {
-	n := make(Scope, len(s))
-	for k, v := range s {
-		n[k] = v
+func NewScope() Scope {
+	return ToScope(values.NewScope())
+}
+func ToScope(s values.Scope) Scope {
+	if s == nil {
+		return nil
 	}
-	return n
+	return compilerScope{s}
 }
 
-func eval(e Evaluator, scope Scope) (values.Value, error) {
-	v, err := e.Eval(scope)
+func nestScope(scope Scope) Scope {
+	return compilerScope{scope.Nest(nil)}
+}
+
+func eval(ctx context.Context, e Evaluator, scope Scope) (values.Value, error) {
+	v, err := e.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
-	values.CheckKind(e.Type().Nature(), v.Type().Nature())
+
+	// values.CheckKind(v.PolyType().Nature(), e.Type().Nature())
 	return v, nil
 }
 
@@ -105,15 +123,15 @@ func (e *blockEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *blockEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *blockEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	var err error
 	for _, b := range e.body {
-		e.value, err = eval(b, scope)
+		e.value, err = eval(ctx, b, scope)
 		if err != nil {
 			return nil, err
 		}
 	}
-	values.CheckKind(e.value.Type().Nature(), e.Type().Nature())
+	// values.CheckKind(e.value.Type().Nature(), e.Type().Nature())
 	return e.value, nil
 }
 
@@ -131,14 +149,59 @@ func (e *declarationEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *declarationEvaluator) Eval(scope Scope) (values.Value, error) {
-	v, err := eval(e.init, scope)
+func (e *declarationEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	v, err := eval(ctx, e.init, scope)
 	if err != nil {
 		return nil, err
 	}
 
 	scope.Set(e.id, v)
 	return v, nil
+}
+
+type stringExpressionEvaluator struct {
+	t     semantic.Type
+	parts []Evaluator
+}
+
+func (e *stringExpressionEvaluator) Type() semantic.Type {
+	return e.t
+}
+
+func (e *stringExpressionEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	var b strings.Builder
+	for _, p := range e.parts {
+		v, err := p.Eval(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(v.Str())
+	}
+	return values.NewString(b.String()), nil
+}
+
+type textEvaluator struct {
+	value string
+}
+
+func (*textEvaluator) Type() semantic.Type {
+	return semantic.String
+}
+
+func (e *textEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	return values.NewString(e.value), nil
+}
+
+type interpolatedEvaluator struct {
+	s Evaluator
+}
+
+func (*interpolatedEvaluator) Type() semantic.Type {
+	return semantic.String
+}
+
+func (e *interpolatedEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	return e.s.Eval(ctx, scope)
 }
 
 type objEvaluator struct {
@@ -151,10 +214,10 @@ func (e *objEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *objEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *objEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	obj := values.NewObject()
 	if e.with != nil {
-		with, err := e.with.Eval(scope)
+		with, err := e.with.Eval(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -164,7 +227,7 @@ func (e *objEvaluator) Eval(scope Scope) (values.Value, error) {
 	}
 
 	for k, node := range e.properties {
-		v, err := eval(node, scope)
+		v, err := eval(ctx, node, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -183,10 +246,10 @@ func (e *arrayEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *arrayEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *arrayEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	arr := values.NewArray(e.t.ElementType())
 	for _, ev := range e.array {
-		v, err := eval(ev, scope)
+		v, err := eval(ctx, ev, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -205,8 +268,8 @@ func (e *logicalEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *logicalEvaluator) Eval(scope Scope) (values.Value, error) {
-	l, err := e.left.Eval(scope)
+func (e *logicalEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	l, err := e.left.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -222,10 +285,10 @@ func (e *logicalEvaluator) Eval(scope Scope) (values.Value, error) {
 			return values.NewBool(true), nil
 		}
 	default:
-		panic(fmt.Errorf("unknown logical operator %v", e.operator))
+		panic(errors.Newf(codes.Internal, "unknown logical operator %v", e.operator))
 	}
 
-	r, err := e.right.Eval(scope)
+	r, err := e.right.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -243,16 +306,16 @@ func (e *conditionalEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *conditionalEvaluator) Eval(scope Scope) (values.Value, error) {
-	t, err := eval(e.test, scope)
+func (e *conditionalEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	t, err := eval(ctx, e.test, scope)
 	if err != nil {
 		return nil, err
 	}
 
-	if t.Bool() {
-		return eval(e.consequent, scope)
+	if t.IsNull() || !t.Bool() {
+		return eval(ctx, e.alternate, scope)
 	} else {
-		return eval(e.alternate, scope)
+		return eval(ctx, e.consequent, scope)
 	}
 }
 
@@ -266,12 +329,12 @@ func (e *binaryEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *binaryEvaluator) Eval(scope Scope) (values.Value, error) {
-	l, err := eval(e.left, scope)
+func (e *binaryEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	l, err := eval(ctx, e.left, scope)
 	if err != nil {
 		return nil, err
 	}
-	r, err := eval(e.right, scope)
+	r, err := eval(ctx, e.right, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -288,8 +351,8 @@ func (e *unaryEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *unaryEvaluator) Eval(scope Scope) (values.Value, error) {
-	v, err := e.node.Eval(scope)
+func (e *unaryEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	v, err := e.node.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +374,7 @@ func (e *unaryEvaluator) Eval(scope Scope) (values.Value, error) {
 		case ast.SubtractionOperator, ast.NotOperator:
 			// Fallthrough to below.
 		default:
-			return nil, fmt.Errorf("unknown unary operator: %s", e.op)
+			return nil, errors.Newf(codes.Internal, "unknown unary operator: %s", e.op)
 		}
 
 		// The subtraction operator falls through to here.
@@ -323,7 +386,7 @@ func (e *unaryEvaluator) Eval(scope Scope) (values.Value, error) {
 		case semantic.Bool:
 			return values.NewBool(!v.Bool()), nil
 		case semantic.Duration:
-			return values.NewDuration(-v.Duration()), nil
+			return values.NewDuration(v.Duration().Mul(-1)), nil
 		default:
 			panic(values.UnexpectedKind(e.t.Nature(), v.Type().Nature()))
 		}
@@ -344,8 +407,21 @@ func (e *integerEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *integerEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *integerEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return values.NewInt(e.i), nil
+}
+
+type unsignedIntegerEvaluator struct {
+	t semantic.Type
+	i uint64
+}
+
+func (e *unsignedIntegerEvaluator) Type() semantic.Type {
+	return e.t
+}
+
+func (e *unsignedIntegerEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	return values.NewUInt(e.i), nil
 }
 
 type stringEvaluator struct {
@@ -357,7 +433,7 @@ func (e *stringEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *stringEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *stringEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return values.NewString(e.s), nil
 }
 
@@ -370,7 +446,7 @@ func (e *regexpEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *regexpEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *regexpEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return values.NewRegexp(e.r), nil
 }
 
@@ -383,7 +459,7 @@ func (e *booleanEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *booleanEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *booleanEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return values.NewBool(e.b), nil
 }
 
@@ -396,7 +472,7 @@ func (e *floatEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *floatEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *floatEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return values.NewFloat(e.f), nil
 }
 
@@ -409,7 +485,7 @@ func (e *timeEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *timeEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *timeEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return values.NewTime(e.time), nil
 }
 
@@ -422,54 +498,62 @@ func (e *durationEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *durationEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *durationEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return values.NewDuration(e.duration), nil
 }
 
 type identifierEvaluator struct {
-	t    semantic.Type
+	t    semantic.PolyType
 	name string
 }
 
 func (e *identifierEvaluator) Type() semantic.Type {
-	return e.t
+	t, ok := e.t.MonoType()
+	if !ok {
+		return semantic.Invalid
+	}
+	return t
 }
 
-func (e *identifierEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *identifierEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	v := scope.Get(e.name)
-	values.CheckKind(v.Type().Nature(), e.t.Nature())
+	// Note this check pattern is slightly different than
+	// the usual one:
+	//
+	//     CheckKind(v.Type().Nature(), e.t.Nature())
+	//                  ^
+	//
+	// This is because variables hold polytypes that might
+	// be universally quantified with one or more type
+	// variables. Hence we must check the Nature of this
+	// value's **polytype** as this value will return an
+	// invalid monotype.
+	//
+	values.CheckKind(v.PolyType().Nature(), e.t.Nature())
 	return v, nil
 }
 
-type valueEvaluator struct {
-	value values.Value
-}
-
-func (e *valueEvaluator) Type() semantic.Type {
-	return e.value.Type()
-}
-
-func (e *valueEvaluator) Eval(scope Scope) (values.Value, error) {
-	return e.value, nil
-}
-
 type memberEvaluator struct {
-	t        semantic.Type
+	t        semantic.PolyType
 	object   Evaluator
 	property string
 }
 
 func (e *memberEvaluator) Type() semantic.Type {
-	return e.t
+	t, ok := e.t.MonoType()
+	if !ok {
+		return semantic.Invalid
+	}
+	return t
 }
 
-func (e *memberEvaluator) Eval(scope Scope) (values.Value, error) {
-	o, err := e.object.Eval(scope)
+func (e *memberEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	o, err := e.object.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
 	v, _ := o.Object().Get(e.property)
-	values.CheckKind(v.Type().Nature(), e.t.Nature())
+	// values.CheckKind(v.PolyType().Nature(), e.t.Nature())
 	return v, nil
 }
 
@@ -483,12 +567,12 @@ func (e *arrayIndexEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *arrayIndexEvaluator) Eval(scope Scope) (values.Value, error) {
-	a, err := e.array.Eval(scope)
+func (e *arrayIndexEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	a, err := e.array.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
-	i, err := e.index.Eval(scope)
+	i, err := e.index.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -505,16 +589,16 @@ func (e *callEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *callEvaluator) Eval(scope Scope) (values.Value, error) {
-	args, err := e.args.Eval(scope)
+func (e *callEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
+	args, err := e.args.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
-	f, err := e.callee.Eval(scope)
+	f, err := e.callee.Eval(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
-	return f.Function().Call(args.Object())
+	return f.Function().Call(ctx, args.Object())
 }
 
 type functionEvaluator struct {
@@ -527,7 +611,7 @@ func (e *functionEvaluator) Type() semantic.Type {
 	return e.t
 }
 
-func (e *functionEvaluator) Eval(scope Scope) (values.Value, error) {
+func (e *functionEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return &functionValue{
 		t:      e.t,
 		body:   e.body,
@@ -553,12 +637,12 @@ func (f *functionValue) HasSideEffect() bool {
 	return false
 }
 
-func (f *functionValue) Call(args values.Object) (values.Value, error) {
-	scope := f.scope.Copy()
+func (f *functionValue) Call(ctx context.Context, args values.Object) (values.Value, error) {
+	scope := nestScope(f.scope)
 	for _, p := range f.params {
 		a, ok := args.Get(p.Key)
 		if !ok && p.Default != nil {
-			v, err := eval(p.Default, f.scope)
+			v, err := eval(ctx, p.Default, f.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -566,7 +650,7 @@ func (f *functionValue) Call(args values.Object) (values.Value, error) {
 		}
 		scope.Set(p.Key, a)
 	}
-	return eval(f.body, scope)
+	return eval(ctx, f.body, scope)
 }
 
 func (f *functionValue) Type() semantic.Type         { return f.t }
@@ -574,6 +658,9 @@ func (f *functionValue) PolyType() semantic.PolyType { return f.t.PolyType() }
 func (f *functionValue) IsNull() bool                { return false }
 func (f *functionValue) Str() string {
 	panic(values.UnexpectedKind(semantic.Function, semantic.String))
+}
+func (f *functionValue) Bytes() []byte {
+	panic(values.UnexpectedKind(semantic.Function, semantic.Bytes))
 }
 func (f *functionValue) Int() int64 {
 	panic(values.UnexpectedKind(semantic.Function, semantic.Int))
@@ -619,6 +706,6 @@ func (noopEvaluator) Type() semantic.Type {
 	return semantic.Nil
 }
 
-func (noopEvaluator) Eval(scope Scope) (values.Value, error) {
+func (noopEvaluator) Eval(ctx context.Context, scope Scope) (values.Value, error) {
 	return values.Null, nil
 }

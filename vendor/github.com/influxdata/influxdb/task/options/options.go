@@ -2,19 +2,18 @@
 package options
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/influxdata/flux/parser"
-
-	"github.com/influxdata/flux/ast"
-
+	"github.com/influxdata/cron"
 	"github.com/influxdata/flux"
+	"github.com/influxdata/flux/ast"
+	"github.com/influxdata/flux/parser"
 	"github.com/influxdata/flux/semantic"
 	"github.com/influxdata/flux/values"
 	"github.com/influxdata/influxdb/pkg/pointer"
-	cron "gopkg.in/robfig/cron.v2"
 )
 
 const maxConcurrency = 100
@@ -54,7 +53,7 @@ func (a Duration) String() string {
 func (a *Duration) Parse(s string) error {
 	q, err := parseSignedDuration(s)
 	if err != nil {
-		return err
+		return ErrTaskInvalidDuration(err)
 	}
 	a.Node = *q
 	return nil
@@ -135,7 +134,7 @@ func (o *Options) IsZero() bool {
 	return o.Name == "" &&
 		o.Cron == "" &&
 		o.Every.IsZero() &&
-		o.Offset == nil &&
+		(o.Offset == nil || o.Offset.IsZero()) &&
 		o.Concurrency == nil &&
 		o.Retry == nil
 }
@@ -194,6 +193,15 @@ func grabTaskOptionAST(p *ast.Package, keys ...string) map[string]ast.Expression
 	return res
 }
 
+func newDeps() flux.Dependencies {
+	deps := flux.NewDefaultDependencies()
+	deps.Deps.HTTPClient = httpClient{}
+	deps.Deps.URLValidator = urlValidator{}
+	deps.Deps.SecretService = secretService{}
+	deps.Deps.FilesystemService = fileSystem{}
+	return deps
+}
+
 // FromScript extracts Options from a Flux script.
 func FromScript(script string) (Options, error) {
 	opt := Options{Retry: pointer.Int64(1), Concurrency: pointer.Int64(1)}
@@ -203,7 +211,9 @@ func FromScript(script string) (Options, error) {
 		return opt, err
 	}
 	durTypes := grabTaskOptionAST(fluxAST, optEvery, optOffset)
-	_, scope, err := flux.EvalAST(fluxAST)
+	// TODO(desa): should be dependencies.NewEmpty(), but for now we'll hack things together
+	ctx := newDeps().Inject(context.Background())
+	_, scope, err := flux.EvalAST(ctx, fluxAST)
 	if err != nil {
 		return opt, err
 	}
@@ -260,9 +270,11 @@ func FromScript(script string) (Options, error) {
 		if err != nil {
 			return opt, err
 		}
+
 		if !ok || durNode == nil {
 			return opt, ErrParseTaskOptionField("every")
 		}
+
 		durNode.BaseNode = ast.BaseNode{}
 		opt.Every.Node = *durNode
 	}
@@ -322,7 +334,7 @@ func (o *Options) Validate() error {
 		// They're both present or both missing.
 		errs = append(errs, "must specify exactly one of either cron or every")
 	} else if cronPresent {
-		_, err := cron.Parse(o.Cron)
+		_, err := cron.ParseUTC(o.Cron)
 		if err != nil {
 			errs = append(errs, "cron invalid: "+err.Error())
 		}

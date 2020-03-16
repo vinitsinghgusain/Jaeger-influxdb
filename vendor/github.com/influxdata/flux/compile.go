@@ -1,6 +1,7 @@
 package flux
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"regexp"
@@ -8,12 +9,12 @@ import (
 	"time"
 
 	"github.com/influxdata/flux/ast"
-
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 	"github.com/influxdata/flux/interpreter"
 	"github.com/influxdata/flux/parser"
 	"github.com/influxdata/flux/semantic"
 	"github.com/influxdata/flux/values"
-	"github.com/pkg/errors"
 )
 
 const (
@@ -21,6 +22,9 @@ const (
 	tableKindKey    = "kind"
 	tableParentsKey = "parents"
 	tableSpecKey    = "spec"
+
+	NowOption = "now"
+	nowPkg    = "universe"
 )
 
 // Parse parses a Flux script and produces an ast.Package.
@@ -34,45 +38,97 @@ func Parse(flux string) (*ast.Package, error) {
 }
 
 // Eval accepts a Flux script and evaluates it to produce a set of side effects (as a slice of values) and a scope.
-func Eval(flux string, opts ...ScopeMutator) ([]interpreter.SideEffect, interpreter.Scope, error) {
+func Eval(ctx context.Context, flux string, opts ...ScopeMutator) ([]interpreter.SideEffect, values.Scope, error) {
 	astPkg, err := Parse(flux)
 	if err != nil {
 		return nil, nil, err
 	}
-	return EvalAST(astPkg, opts...)
+	return EvalAST(ctx, astPkg, opts...)
 }
 
 // EvalAST accepts a Flux AST and evaluates it to produce a set of side effects (as a slice of values) and a scope.
-func EvalAST(astPkg *ast.Package, opts ...ScopeMutator) ([]interpreter.SideEffect, interpreter.Scope, error) {
+func EvalAST(ctx context.Context, astPkg *ast.Package, opts ...ScopeMutator) ([]interpreter.SideEffect, values.Scope, error) {
 	semPkg, err := semantic.New(astPkg)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	itrp := interpreter.NewInterpreter()
-	universe := Prelude()
+	pkg := interpreter.NewPackage("")
+	itrp := interpreter.NewInterpreter(pkg)
+	// Create a scope for execution whose parent is a copy of the prelude and whose current scope is the package.
+	// A copy of the prelude must be used since options can be mutated.
+	scope := values.NewNestedScope(preludeScope.Copy(), pkg)
 
 	for _, opt := range opts {
-		opt(universe)
+		opt(scope)
 	}
 
-	sideEffects, err := itrp.Eval(semPkg, universe, StdLib())
+	sideEffects, err := itrp.Eval(ctx, semPkg, scope, StdLib())
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return sideEffects, universe, nil
+	return sideEffects, scope, nil
+}
 
+// EvalOptions is like EvalAST, but only evaluates options.
+func EvalOptions(ctx context.Context, astPkg *ast.Package, opts ...ScopeMutator) ([]interpreter.SideEffect, values.Scope, error) {
+	return EvalAST(ctx, options(astPkg), opts...)
+}
+
+// options returns a shallow copy of the AST, trimmed to include only option statements.
+func options(astPkg *ast.Package) *ast.Package {
+	trimmed := &ast.Package{
+		BaseNode: astPkg.BaseNode,
+		Path:     astPkg.Path,
+		Package:  astPkg.Package,
+	}
+	for _, f := range astPkg.Files {
+		var body []ast.Statement
+		for _, s := range f.Body {
+			if opt, ok := s.(*ast.OptionStatement); ok {
+				body = append(body, opt)
+			}
+		}
+		if len(body) > 0 {
+			trimmed.Files = append(trimmed.Files, &ast.File{
+				Body:     body,
+				BaseNode: f.BaseNode,
+				Name:     f.Name,
+				Package:  f.Package,
+				Imports:  f.Imports,
+			})
+		}
+	}
+
+	return trimmed
 }
 
 // ScopeMutator is any function that mutates the scope of an identifier.
-type ScopeMutator = func(interpreter.Scope)
+type ScopeMutator = func(values.Scope)
 
 // SetOption returns a func that adds a var binding to a scope.
-func SetOption(name string, v values.Value) ScopeMutator {
-	return func(scope interpreter.Scope) {
-		scope.Set(name, v)
+func SetOption(pkg, name string, v values.Value) ScopeMutator {
+	return func(scope values.Scope) {
+		scope.SetOption(pkg, name, v)
 	}
+}
+
+// SetNowOption returns a ScopeMutator that sets the `now` option to the given time.
+func SetNowOption(now time.Time) ScopeMutator {
+	return SetOption(nowPkg, NowOption, generateNowFunc(now))
+}
+
+func generateNowFunc(now time.Time) values.Function {
+	timeVal := values.NewTime(values.ConvertTime(now))
+	ftype := semantic.NewFunctionPolyType(semantic.FunctionPolySignature{
+		Return: semantic.Time,
+	})
+	call := func(ctx context.Context, args values.Object) (values.Value, error) {
+		return timeVal, nil
+	}
+	sideEffect := false
+	return values.NewFunction(NowOption, ftype, call, sideEffect)
 }
 
 type CreateOperationSpec func(args Arguments, a *Administration) (OperationSpec, error)
@@ -83,13 +139,11 @@ var (
 
 	builtinPackages = make(map[string]*ast.Package)
 
+	// list of packages included in the prelude.
+	// Packages must be listed in import order
 	prelude = []string{
 		"universe",
 		"influxdata/influxdb",
-		"math",
-		"strings",
-		"regexp",
-		"date",
 	}
 	preludeScope = &scopeSet{
 		packages: make([]*interpreter.Package, len(prelude)),
@@ -104,21 +158,38 @@ type scopeSet struct {
 func (s *scopeSet) Lookup(name string) (values.Value, bool) {
 	for _, pkg := range s.packages {
 		if v, ok := pkg.Get(name); ok {
+			if _, ok := v.(values.Package); ok {
+				// prelude should not expose any imported packages
+				return nil, false
+			}
 			return v, ok
 		}
 	}
 	return nil, false
 }
+func (s *scopeSet) LocalLookup(name string) (values.Value, bool) {
+	// scopeSet is always a top level scope
+	return s.Lookup(name)
+}
 
 func (s *scopeSet) Set(name string, v values.Value) {
 	panic("cannot mutate the universe block")
 }
-
-func (s *scopeSet) Nest(obj values.Object) interpreter.Scope {
-	return interpreter.NewNestedScope(s, obj)
+func (s *scopeSet) SetOption(pkg, name string, v values.Value) (bool, error) {
+	for _, p := range s.packages {
+		if _, ok := p.Get(name); ok || p.Name() == pkg {
+			p.SetOption(name, v)
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-func (s *scopeSet) Pop() interpreter.Scope {
+func (s *scopeSet) Nest(obj values.Object) values.Scope {
+	return values.NewNestedScope(s, obj)
+}
+
+func (s *scopeSet) Pop() values.Scope {
 	return nil
 }
 
@@ -132,14 +203,22 @@ func (s *scopeSet) Size() int {
 
 func (s *scopeSet) Range(f func(k string, v values.Value)) {
 	for _, pkg := range s.packages {
-		pkg.Range(f)
+		if pkg == nil {
+			panic(`nil package in scope; try importing "github.com/influxdata/flux/builtin"`)
+		}
+		pkg.Range(func(k string, v values.Value) {
+			if _, ok := v.(values.Package); ok {
+				// prelude should not expose any imported packages
+				return
+			}
+			f(k, v)
+		})
 	}
 }
 
 func (s *scopeSet) LocalRange(f func(k string, v values.Value)) {
-	for _, pkg := range s.packages {
-		pkg.Range(f)
-	}
+	// scopeSet is always a top level scope
+	s.Range(f)
 }
 
 func (s *scopeSet) SetReturn(v values.Value) {
@@ -150,12 +229,14 @@ func (s *scopeSet) Return() values.Value {
 	return nil
 }
 
-func (s *scopeSet) Copy() interpreter.Scope {
+func (s *scopeSet) Copy() values.Scope {
 	packages := make([]*interpreter.Package, len(s.packages))
 	for i, pkg := range s.packages {
 		packages[i] = pkg.Copy()
 	}
-	return &scopeSet{packages}
+	return &scopeSet{
+		packages: packages,
+	}
 }
 
 // StdLib returns an importer for the Flux standard library.
@@ -164,19 +245,28 @@ func StdLib() interpreter.Importer {
 }
 
 // Prelude returns a scope object representing the Flux universe block
-func Prelude() interpreter.Scope {
+func Prelude() values.Scope {
+	if !finalized {
+		panic("builtins not finalized")
+	}
 	return preludeScope.Nest(nil)
 }
 
 // RegisterPackage adds a builtin package
 func RegisterPackage(pkg *ast.Package) {
 	if finalized {
-		panic(errors.New("already finalized, cannot register builtin package"))
+		panic(errors.New(codes.Internal, "already finalized, cannot register builtin package"))
 	}
 	if _, ok := builtinPackages[pkg.Path]; ok {
-		panic(fmt.Errorf("duplicate builtin package %q", pkg.Path))
+		panic(errors.Newf(codes.Internal, "duplicate builtin package %q", pkg.Path))
 	}
 	builtinPackages[pkg.Path] = pkg
+	_, ok := stdlib.pkgs[pkg.Path]
+	if !ok {
+		// Lazy creation of interpreter package
+		// registration order is not known so we must create it lazily
+		stdlib.pkgs[pkg.Path] = interpreter.NewPackage(path.Base(pkg.Path))
+	}
 }
 
 // RegisterPackageValue adds a value for an identifier in a builtin package
@@ -191,17 +281,19 @@ func ReplacePackageValue(pkgpath, name string, value values.Value) {
 
 func registerPackageValue(pkgpath, name string, value values.Value, replace bool) {
 	if finalized {
-		panic(errors.New("already finalized, cannot register builtin package value"))
+		panic(errors.Newf(codes.Internal, "already finalized, cannot register builtin package value"))
 	}
 	packg, ok := stdlib.pkgs[pkgpath]
 	if !ok {
+		// Lazy creation of interpreter package
+		// registration order is not known so we must create it lazily
 		packg = interpreter.NewPackage(path.Base(pkgpath))
 		stdlib.pkgs[pkgpath] = packg
 	}
 	if _, ok := packg.Get(name); ok && !replace {
-		panic(fmt.Errorf("duplicate builtin package value %q %q", pkgpath, name))
+		panic(errors.Newf(codes.Internal, "duplicate builtin package value %q %q", pkgpath, name))
 	} else if !ok && replace {
-		panic(fmt.Errorf("missing builtin package value %q %q", pkgpath, name))
+		panic(errors.Newf(codes.Internal, "missing builtin package value %q %q", pkgpath, name))
 	}
 	packg.Set(name, value)
 }
@@ -225,7 +317,7 @@ func FunctionValueWithSideEffect(name string, c CreateOperationSpec, sig semanti
 func functionValue(name string, c CreateOperationSpec, sig semantic.FunctionPolySignature, sideEffects bool) values.Value {
 	if c == nil {
 		c = func(args Arguments, a *Administration) (OperationSpec, error) {
-			return nil, fmt.Errorf("function %q is not implemented", name)
+			return nil, errors.Newf(codes.Unimplemented, "function %q is not implemented", name)
 		}
 	}
 	return &function{
@@ -258,33 +350,33 @@ func FinalizeBuiltIns() {
 }
 
 func evalBuiltInPackages() error {
-	order, err := packageOrder(builtinPackages)
+	order, err := packageOrder(prelude, builtinPackages)
 	if err != nil {
 		return err
 	}
 	for _, astPkg := range order {
 		if ast.Check(astPkg) > 0 {
 			err := ast.GetError(astPkg)
-			return errors.Wrapf(err, "failed to parse builtin package %q", astPkg.Path)
+			return errors.Wrapf(err, codes.Inherit, "failed to parse builtin package %q", astPkg.Path)
 		}
 		semPkg, err := semantic.New(astPkg)
 		if err != nil {
-			return errors.Wrapf(err, "failed to create semantic graph for builtin package %q", astPkg.Path)
+			return errors.Wrapf(err, codes.Inherit, "failed to create semantic graph for builtin package %q", astPkg.Path)
 		}
 
 		pkg := stdlib.pkgs[astPkg.Path]
 		if pkg == nil {
-			return errors.Wrapf(err, "package does not exist %q", astPkg.Path)
+			return errors.Wrapf(err, codes.Inherit, "package does not exist %q", astPkg.Path)
 		}
 
 		// Validate packages before evaluating them
 		if err := validatePackageBuiltins(pkg, astPkg); err != nil {
-			return errors.Wrapf(err, "package has invalid builtins %q", astPkg.Path)
+			return errors.Wrapf(err, codes.Inherit, "package has invalid builtins %q", astPkg.Path)
 		}
 
-		itrp := interpreter.NewInterpreter()
-		if _, err := itrp.Eval(semPkg, preludeScope.Nest(pkg), stdlib); err != nil {
-			return errors.Wrapf(err, "failed to evaluate builtin package %q", astPkg.Path)
+		itrp := interpreter.NewInterpreter(pkg)
+		if _, err := itrp.Eval(context.Background(), semPkg, preludeScope.Nest(pkg), stdlib); err != nil {
+			return errors.Wrapf(err, codes.Inherit, "failed to evaluate builtin package %q", astPkg.Path)
 		}
 	}
 	return nil
@@ -316,7 +408,7 @@ func validatePackageBuiltins(pkg *interpreter.Package, astPkg *ast.Package) erro
 		}
 	})
 	if len(missing) > 0 || len(extra) > 0 {
-		return fmt.Errorf("missing builtin values %v, extra builtin values %v", missing, extra)
+		return errors.Newf(codes.Internal, "missing builtin values %v, extra builtin values %v", missing, extra)
 	}
 	return nil
 }
@@ -414,6 +506,9 @@ func (t *TableObject) PolyType() semantic.PolyType {
 func (t *TableObject) Str() string {
 	panic(values.UnexpectedKind(semantic.Object, semantic.String))
 }
+func (t *TableObject) Bytes() []byte {
+	panic(values.UnexpectedKind(semantic.Object, semantic.Bytes))
+}
 func (t *TableObject) Int() int64 {
 	panic(values.UnexpectedKind(semantic.Object, semantic.Int))
 }
@@ -505,18 +600,6 @@ func FunctionSignature(parameters map[string]semantic.PolyType, required []strin
 	}
 }
 
-// BuiltIns returns a copy of the builtin values and their declarations.
-func BuiltIns() map[string]values.Value {
-	if !finalized {
-		panic("builtins not finalized")
-	}
-	cpy := make(map[string]values.Value, preludeScope.Size())
-	preludeScope.Range(func(k string, v values.Value) {
-		cpy[k] = v
-	})
-	return cpy
-}
-
 type Administration struct {
 	parents values.Array
 }
@@ -537,7 +620,7 @@ func (a *Administration) AddParentFromArgs(args Arguments) error {
 	}
 	p, ok := parent.(*TableObject)
 	if !ok {
-		return fmt.Errorf("argument is not a table object: got %T", parent)
+		return errors.Newf(codes.Invalid, "argument is not a table object: got %T", parent)
 	}
 	a.AddParent(p)
 	return nil
@@ -578,6 +661,9 @@ func (f *function) IsNull() bool {
 }
 func (f *function) Str() string {
 	panic(values.UnexpectedKind(semantic.Function, semantic.String))
+}
+func (f *function) Bytes() []byte {
+	panic(values.UnexpectedKind(semantic.Function, semantic.Bytes))
 }
 func (f *function) Int() int64 {
 	panic(values.UnexpectedKind(semantic.Function, semantic.Int))
@@ -620,8 +706,8 @@ func (f *function) HasSideEffect() bool {
 	return f.hasSideEffect
 }
 
-func (f *function) Call(argsObj values.Object) (values.Value, error) {
-	return interpreter.DoFunctionCall(f.call, argsObj)
+func (f *function) Call(ctx context.Context, args values.Object) (values.Value, error) {
+	return interpreter.DoFunctionCall(f.call, args)
 }
 
 func (f *function) call(args interpreter.Arguments) (values.Value, error) {
@@ -666,7 +752,7 @@ func (a Arguments) GetRequiredTime(name string) (Time, error) {
 		return Time{}, err
 	}
 	if !ok {
-		return Time{}, fmt.Errorf("missing required keyword argument %q", name)
+		return Time{}, errors.Newf(codes.Invalid, "missing required keyword argument %q", name)
 	}
 	return qt, nil
 }
@@ -674,18 +760,18 @@ func (a Arguments) GetRequiredTime(name string) (Time, error) {
 func (a Arguments) GetDuration(name string) (Duration, bool, error) {
 	v, ok := a.Get(name)
 	if !ok {
-		return 0, false, nil
+		return ConvertDuration(0), false, nil
 	}
-	return Duration(v.Duration()), true, nil
+	return v.Duration(), true, nil
 }
 
 func (a Arguments) GetRequiredDuration(name string) (Duration, error) {
 	d, ok, err := a.GetDuration(name)
 	if err != nil {
-		return 0, err
+		return ConvertDuration(0), err
 	}
 	if !ok {
-		return 0, fmt.Errorf("missing required keyword argument %q", name)
+		return ConvertDuration(0), errors.Newf(codes.Invalid, "missing required keyword argument %q", name)
 	}
 	return d, nil
 }
@@ -706,7 +792,7 @@ func ToQueryTime(value values.Value) (Time, error) {
 			Absolute: time.Unix(value.Int(), 0),
 		}, nil
 	default:
-		return Time{}, fmt.Errorf("value is not a time, got %v", value.Type())
+		return Time{}, errors.Newf(codes.Invalid, "value is not a time, got %v", value.Type())
 	}
 }
 
@@ -741,8 +827,18 @@ func (imp *importer) ImportPackageObject(path string) (*interpreter.Package, boo
 }
 
 // packageOrder determines a safe order to process builtin packages such that all dependent packages are previously processed.
-func packageOrder(pkgs map[string]*ast.Package) (order []*ast.Package, err error) {
+func packageOrder(prelude []string, pkgs map[string]*ast.Package) (order []*ast.Package, err error) {
 	//TODO(nathanielc): Add import cycle detection, this is not needed until this code is promoted to work with third party imports
+
+	// Always import prelude first so other packages need not explicitly import the prelude packages.
+	for _, path := range prelude {
+		pkg := pkgs[path]
+		order, err = insertPkg(pkg, pkgs, order)
+		if err != nil {
+			return
+		}
+	}
+	// Import all other packages
 	for _, pkg := range pkgs {
 		order, err = insertPkg(pkg, pkgs, order)
 		if err != nil {
@@ -757,7 +853,7 @@ func insertPkg(pkg *ast.Package, pkgs map[string]*ast.Package, order []*ast.Pack
 	for _, path := range imports {
 		dep, ok := pkgs[path]
 		if !ok {
-			return nil, fmt.Errorf("unknown builtin package %q", path)
+			return nil, errors.Newf(codes.Invalid, "unknown builtin package %q", path)
 		}
 		order, err = insertPkg(dep, pkgs, order)
 		if err != nil {

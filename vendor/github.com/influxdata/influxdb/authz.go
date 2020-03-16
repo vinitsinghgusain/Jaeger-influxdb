@@ -127,6 +127,8 @@ const (
 	NotificationRuleResourceType = ResourceType("notificationRules") // 14
 	// NotificationEndpointResourceType gives permission to one or more notificationEndpoints.
 	NotificationEndpointResourceType = ResourceType("notificationEndpoints") // 15
+	// ChecksResourceType gives permission to one or more Checks.
+	ChecksResourceType = ResourceType("checks") // 16
 )
 
 // AllResourceTypes is the list of all known resource types.
@@ -147,6 +149,7 @@ var AllResourceTypes = []ResourceType{
 	DocumentsResourceType,            // 13
 	NotificationRuleResourceType,     // 14
 	NotificationEndpointResourceType, // 15
+	ChecksResourceType,               // 16
 	// NOTE: when modifying this list, please update the swagger for components.schemas.Permission resource enum.
 }
 
@@ -163,6 +166,7 @@ var OrgResourceTypes = []ResourceType{
 	DocumentsResourceType,            // 13
 	NotificationRuleResourceType,     // 14
 	NotificationEndpointResourceType, // 15
+	ChecksResourceType,               // 16
 }
 
 // Valid checks if the resource type is a member of the ResourceType enum.
@@ -189,6 +193,7 @@ func (t ResourceType) Valid() (err error) {
 	case DocumentsResourceType: // 13
 	case NotificationRuleResourceType: // 14
 	case NotificationEndpointResourceType: // 15
+	case ChecksResourceType: // 16
 	default:
 		err = ErrInvalidResourceType
 	}
@@ -261,7 +266,7 @@ func (p *Permission) Valid() error {
 		}
 	}
 
-	if p.Resource.OrgID != nil && !(*p.Resource.OrgID).Valid() {
+	if p.Resource.OrgID != nil && !p.Resource.OrgID.Valid() {
 		return &Error{
 			Code: EInvalid,
 			Err:  ErrInvalidID,
@@ -269,7 +274,7 @@ func (p *Permission) Valid() error {
 		}
 	}
 
-	if p.Resource.ID != nil && !(*p.Resource.ID).Valid() {
+	if p.Resource.ID != nil && !p.Resource.ID.Valid() {
 		return &Error{
 			Code: EInvalid,
 			Err:  ErrInvalidID,
@@ -327,6 +332,16 @@ func OperPermissions() []Permission {
 		}
 	}
 
+	return ps
+}
+
+// ReadAllPermissions represents permission to read all data and metadata.
+// Like OperPermissions, but allows read-only users.
+func ReadAllPermissions() []Permission {
+	ps := make([]Permission, len(AllResourceTypes))
+	for i, t := range AllResourceTypes {
+		ps[i] = Permission{Action: ReadAction, Resource: Resource{Type: t}}
+	}
 	return ps
 }
 

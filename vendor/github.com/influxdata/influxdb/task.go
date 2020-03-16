@@ -18,26 +18,52 @@ const (
 	TaskDefaultPageSize = 100
 	TaskMaxPageSize     = 500
 
+	// TODO(jsteenb2): make these constants of type Status
+
 	TaskStatusActive   = "active"
 	TaskStatusInactive = "inactive"
 )
 
+var (
+	// TaskSystemType is the type set in tasks' for all crud requests
+	TaskSystemType = "system"
+)
+
+// TODO: these are temporary functions until we can work through optimizing auth
+// FindTaskWithAuth adds a auth hint for lookup of tasks
+func FindTaskWithoutAuth(ctx context.Context) context.Context {
+	return context.WithValue(ctx, "taskAuth", "omit")
+}
+
+// FindTaskAuthRequired retrieves the taskAuth hint
+func FindTaskAuthRequired(ctx context.Context) bool {
+	val, ok := ctx.Value("taskAuth").(string)
+	return !(ok && val == "omit")
+}
+
 // Task is a task. 🎊
 type Task struct {
-	ID              ID     `json:"id"`
-	OrganizationID  ID     `json:"orgID"`
-	Organization    string `json:"org"`
-	AuthorizationID ID     `json:"authorizationID"`
-	Name            string `json:"name"`
-	Description     string `json:"description,omitempty"`
-	Status          string `json:"status"`
-	Flux            string `json:"flux"`
-	Every           string `json:"every,omitempty"`
-	Cron            string `json:"cron,omitempty"`
-	Offset          string `json:"offset,omitempty"`
-	LatestCompleted string `json:"latestCompleted,omitempty"`
-	CreatedAt       string `json:"createdAt,omitempty"`
-	UpdatedAt       string `json:"updatedAt,omitempty"`
+	ID              ID                     `json:"id"`
+	Type            string                 `json:"type,omitempty"`
+	OrganizationID  ID                     `json:"orgID"`
+	Organization    string                 `json:"org"`
+	AuthorizationID ID                     `json:"-"`
+	Authorization   *Authorization         `json:"-"`
+	OwnerID         ID                     `json:"ownerID"`
+	Name            string                 `json:"name"`
+	Description     string                 `json:"description,omitempty"`
+	Status          string                 `json:"status"`
+	Flux            string                 `json:"flux"`
+	Every           string                 `json:"every,omitempty"`
+	Cron            string                 `json:"cron,omitempty"`
+	Offset          time.Duration          `json:"offset,omitempty"`
+	LatestCompleted time.Time              `json:"latestCompleted,omitempty"`
+	LatestScheduled time.Time              `json:"latestScheduled,omitempty"`
+	LastRunStatus   string                 `json:"lastRunStatus,omitempty"`
+	LastRunError    string                 `json:"lastRunError,omitempty"`
+	CreatedAt       time.Time              `json:"createdAt,omitempty"`
+	UpdatedAt       time.Time              `json:"updatedAt,omitempty"`
+	Metadata        map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // EffectiveCron returns the effective cron string of the options.
@@ -55,31 +81,17 @@ func (t *Task) EffectiveCron() string {
 	return ""
 }
 
-// Run is a record created when a run of a task is scheduled.
+// Run is a record createId when a run of a task is scheduled.
 type Run struct {
-	ID           ID     `json:"id,omitempty"`
-	TaskID       ID     `json:"taskID"`
-	Status       string `json:"status"`
-	ScheduledFor string `json:"scheduledFor"`
-	StartedAt    string `json:"startedAt,omitempty"`
-	FinishedAt   string `json:"finishedAt,omitempty"`
-	RequestedAt  string `json:"requestedAt,omitempty"`
-	Log          []Log  `json:"log,omitempty"`
-}
-
-// ScheduledForTime gives the time.Time that the run is scheduled for.
-func (r *Run) ScheduledForTime() (time.Time, error) {
-	return time.Parse(time.RFC3339, r.ScheduledFor)
-}
-
-// StartedAtTime gives the time.Time that the run was started.
-func (r *Run) StartedAtTime() (time.Time, error) {
-	return time.Parse(time.RFC3339Nano, r.StartedAt)
-}
-
-// RequestedAtTime gives the time.Time that the run was requested.
-func (r *Run) RequestedAtTime() (time.Time, error) {
-	return time.Parse(time.RFC3339, r.RequestedAt)
+	ID           ID        `json:"id,omitempty"`
+	TaskID       ID        `json:"taskID"`
+	Status       string    `json:"status"`
+	ScheduledFor time.Time `json:"scheduledFor"`          // ScheduledFor is the Now time used in the task's query
+	RunAt        time.Time `json:"runAt"`                 // RunAt is the time the task is scheduled to be run, which is ScheduledFor + Offset
+	StartedAt    time.Time `json:"startedAt,omitempty"`   // StartedAt is the time the executor begins running the task
+	FinishedAt   time.Time `json:"finishedAt,omitempty"`  // FinishedAt is the time the executor finishes running the task
+	RequestedAt  time.Time `json:"requestedAt,omitempty"` // RequestedAt is the time the coordinator told the scheduler to schedule the task
+	Log          []Log     `json:"log,omitempty"`
 }
 
 // Log represents a link to a log resource
@@ -134,12 +146,14 @@ type TaskService interface {
 
 // TaskCreate is the set of values to create a task.
 type TaskCreate struct {
-	Flux           string `json:"flux"`
-	Description    string `json:"description,omitempty"`
-	Status         string `json:"status,omitempty"`
-	OrganizationID ID     `json:"orgID,omitempty"`
-	Organization   string `json:"org,omitempty"`
-	Token          string `json:"token,omitempty"`
+	Type           string                 `json:"type,omitempty"`
+	Flux           string                 `json:"flux"`
+	Description    string                 `json:"description,omitempty"`
+	Status         string                 `json:"status,omitempty"`
+	OrganizationID ID                     `json:"orgID,omitempty"`
+	Organization   string                 `json:"org,omitempty"`
+	OwnerID        ID                     `json:"-"`
+	Metadata       map[string]interface{} `json:"-"` // not to be set through a web request but rather used by a http service using tasks backend.
 }
 
 func (t TaskCreate) Validate() error {
@@ -161,13 +175,14 @@ type TaskUpdate struct {
 	Description *string `json:"description,omitempty"`
 
 	// LatestCompleted us to set latest completed on startup to skip task catchup
-	LatestCompleted *string `json:"-"`
+	LatestCompleted *time.Time             `json:"-"`
+	LatestScheduled *time.Time             `json:"-"`
+	LastRunStatus   *string                `json:"-"`
+	LastRunError    *string                `json:"-"`
+	Metadata        map[string]interface{} `json:"-"` // not to be set through a web request but rather used by a http service using tasks backend.
 
 	// Options gets unmarshalled from json as if it was flat, with the same level as Flux and Status.
 	Options options.Options // when we unmarshal this gets unmarshalled from flat key-values
-
-	// Optional token override.
-	Token string `json:"token,omitempty"`
 }
 
 func (t *TaskUpdate) UnmarshalJSON(data []byte) error {
@@ -192,8 +207,6 @@ func (t *TaskUpdate) UnmarshalJSON(data []byte) error {
 		Concurrency *int64 `json:"concurrency,omitempty"`
 
 		Retry *int64 `json:"retry,omitempty"`
-
-		Token string `json:"token,omitempty"`
 	}{}
 
 	if err := json.Unmarshal(data, &jo); err != nil {
@@ -211,12 +224,10 @@ func (t *TaskUpdate) UnmarshalJSON(data []byte) error {
 	t.Options.Retry = jo.Retry
 	t.Flux = jo.Flux
 	t.Status = jo.Status
-	t.Token = jo.Token
-
 	return nil
 }
 
-func (t TaskUpdate) MarshalJSON() ([]byte, error) {
+func (t *TaskUpdate) MarshalJSON() ([]byte, error) {
 	jo := struct {
 		Flux        *string `json:"flux,omitempty"`
 		Status      *string `json:"status,omitempty"`
@@ -235,8 +246,6 @@ func (t TaskUpdate) MarshalJSON() ([]byte, error) {
 		Concurrency *int64 `json:"concurrency,omitempty"`
 
 		Retry *int64 `json:"retry,omitempty"`
-
-		Token string `json:"token,omitempty"`
 	}{}
 	jo.Name = t.Options.Name
 	jo.Cron = t.Options.Cron
@@ -250,15 +259,22 @@ func (t TaskUpdate) MarshalJSON() ([]byte, error) {
 	jo.Retry = t.Options.Retry
 	jo.Flux = t.Flux
 	jo.Status = t.Status
-	jo.Token = t.Token
 	return json.Marshal(jo)
 }
 
-func (t TaskUpdate) Validate() error {
+func (t *TaskUpdate) Validate() error {
 	switch {
 	case !t.Options.Every.IsZero() && t.Options.Cron != "":
 		return errors.New("cannot specify both every and cron")
-	case t.Flux == nil && t.Status == nil && t.Options.IsZero() && t.Token == "":
+	case !t.Options.Every.IsZero():
+		if _, err := parser.ParseSignedDuration(t.Options.Every.String()); err != nil {
+			return fmt.Errorf("every: %s is invalid", err)
+		}
+	case t.Options.Offset != nil && !t.Options.Offset.IsZero():
+		if _, err := time.ParseDuration(t.Options.Offset.String()); err != nil {
+			return fmt.Errorf("offset: %s, %s is invalid, the largest unit supported is h", t.Options.Offset.String(), err)
+		}
+	case t.Flux == nil && t.Status == nil && t.Options.IsZero():
 		return errors.New("cannot update task without content")
 	case t.Status != nil && *t.Status != TaskStatusActive && *t.Status != TaskStatusInactive:
 		return fmt.Errorf("invalid task status: %q", *t.Status)
@@ -266,14 +282,34 @@ func (t TaskUpdate) Validate() error {
 	return nil
 }
 
+// safeParseSource calls the Flux parser.ParseSource function
+// and is guaranteed not to panic.
+func safeParseSource(f string) (pkg *ast.Package, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = &Error{
+				Code: EInternal,
+				Msg:  "internal error in flux engine; unable to parse",
+			}
+		}
+	}()
+
+	pkg = parser.ParseSource(f)
+	return pkg, err
+}
+
 // UpdateFlux updates the TaskUpdate to go from updating options to updating a flux string, that now has those updated options in it
 // It zeros the options in the TaskUpdate.
-func (t *TaskUpdate) UpdateFlux(oldFlux string) error {
+func (t *TaskUpdate) UpdateFlux(oldFlux string) (err error) {
 	if t.Flux != nil && *t.Flux != "" {
 		oldFlux = *t.Flux
 	}
 	toDelete := map[string]struct{}{}
-	parsedPKG := parser.ParseSource(oldFlux)
+	parsedPKG, err := safeParseSource(oldFlux)
+	if err != nil {
+		return err
+	}
+
 	if ast.Check(parsedPKG) > 0 {
 		return ast.GetError(parsedPKG)
 	}
@@ -374,11 +410,14 @@ func (t *TaskUpdate) UpdateFlux(oldFlux string) error {
 
 // TaskFilter represents a set of filters that restrict the returned results
 type TaskFilter struct {
+	Type           *string
+	Name           *string
 	After          *ID
 	OrganizationID *ID
 	Organization   string
 	User           *ID
 	Limit          int
+	Status         *string
 }
 
 // QueryParams Converts TaskFilter fields to url query params.
@@ -425,4 +464,76 @@ type LogFilter struct {
 
 	// The optional Run ID limits logs to a single run.
 	Run *ID
+}
+
+type TaskStatus string
+
+const (
+	TaskActive   TaskStatus = "active"
+	TaskInactive TaskStatus = "inactive"
+
+	DefaultTaskStatus TaskStatus = TaskActive
+)
+
+type RunStatus int
+
+const (
+	RunStarted RunStatus = iota
+	RunSuccess
+	RunFail
+	RunCanceled
+	RunScheduled
+)
+
+func (r RunStatus) String() string {
+	switch r {
+	case RunStarted:
+		return "started"
+	case RunSuccess:
+		return "success"
+	case RunFail:
+		return "failed"
+	case RunCanceled:
+		return "canceled"
+	case RunScheduled:
+		return "scheduled"
+	}
+	panic(fmt.Sprintf("unknown RunStatus: %d", r))
+}
+
+// RequestStillQueuedError is returned when attempting to retry a run which has not yet completed.
+type RequestStillQueuedError struct {
+	// Unix timestamps matching existing request's start and end.
+	Start, End int64
+}
+
+const fmtRequestStillQueued = "previous retry for start=%s end=%s has not yet finished"
+
+func (e RequestStillQueuedError) Error() string {
+	return fmt.Sprintf(fmtRequestStillQueued,
+		time.Unix(e.Start, 0).UTC().Format(time.RFC3339),
+		time.Unix(e.End, 0).UTC().Format(time.RFC3339),
+	)
+}
+
+// ParseRequestStillQueuedError attempts to parse a RequestStillQueuedError from msg.
+// If msg is formatted correctly, the resultant error is returned; otherwise it returns nil.
+func ParseRequestStillQueuedError(msg string) *RequestStillQueuedError {
+	var s, e string
+	n, err := fmt.Sscanf(msg, fmtRequestStillQueued, &s, &e)
+	if err != nil || n != 2 {
+		return nil
+	}
+
+	start, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil
+	}
+
+	end, err := time.Parse(time.RFC3339, e)
+	if err != nil {
+		return nil
+	}
+
+	return &RequestStillQueuedError{Start: start.Unix(), End: end.Unix()}
 }

@@ -17,27 +17,30 @@ import (
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/execute"
 	"github.com/influxdata/flux/internal/spec"
-	"github.com/influxdata/flux/interpreter"
 	"github.com/influxdata/flux/semantic"
 	"github.com/influxdata/flux/values"
 )
 
 type REPL struct {
-	scope   interpreter.Scope
+	scope   values.Scope
 	querier Querier
+	ctx     context.Context
+	deps    flux.Dependencies
 
 	cancelMu   sync.Mutex
 	cancelFunc context.CancelFunc
 }
 
 type Querier interface {
-	Query(ctx context.Context, compiler flux.Compiler) (flux.ResultIterator, error)
+	Query(ctx context.Context, deps flux.Dependencies, compiler flux.Compiler) (flux.ResultIterator, error)
 }
 
-func New(q Querier) *REPL {
+func New(ctx context.Context, deps flux.Dependencies, q Querier) *REPL {
 	return &REPL{
-		scope:   interpreter.NewScope(),
+		scope:   values.NewScope(),
 		querier: q,
+		ctx:     ctx,
+		deps:    deps,
 	}
 }
 
@@ -134,7 +137,7 @@ func (r *REPL) executeLine(t string) error {
 		t = q
 	}
 
-	ses, scope, err := flux.Eval(t, func(ns interpreter.Scope) {
+	ses, scope, err := flux.Eval(r.ctx, t, func(ns values.Scope) {
 		// copy values saved in the cached scope to the new interpreter's scope
 		r.scope.Range(func(k string, v values.Value) {
 			ns.Set(k, v)
@@ -153,12 +156,16 @@ func (r *REPL) executeLine(t string) error {
 				if !ok {
 					return fmt.Errorf("now option not set")
 				}
-				nowTime, err := now.Function().Call(nil)
+				ctx := r.deps.Inject(context.TODO())
+				nowTime, err := now.Function().Call(ctx, nil)
 				if err != nil {
 					return err
 				}
-				s := spec.FromTableObject(t, nowTime.Time().Time())
-				if err := r.doQuery(s); err != nil {
+				s, err := spec.FromTableObject(r.ctx, t, nowTime.Time().Time())
+				if err != nil {
+					return err
+				}
+				if err := r.doQuery(r.ctx, s, r.deps); err != nil {
 					return err
 				}
 			} else {
@@ -169,9 +176,9 @@ func (r *REPL) executeLine(t string) error {
 	return nil
 }
 
-func (r *REPL) doQuery(spec *flux.Spec) error {
+func (r *REPL) doQuery(cx context.Context, spec *flux.Spec, deps flux.Dependencies) error {
 	// Setup cancel context
-	ctx, cancelFunc := context.WithCancel(context.Background())
+	ctx, cancelFunc := context.WithCancel(cx)
 	r.setCancel(cancelFunc)
 	defer cancelFunc()
 	defer r.clearCancel()
@@ -180,7 +187,7 @@ func (r *REPL) doQuery(spec *flux.Spec) error {
 		Spec: spec,
 	}
 
-	results, err := r.querier.Query(ctx, replCompiler)
+	results, err := r.querier.Query(ctx, deps, replCompiler)
 	if err != nil {
 		return err
 	}

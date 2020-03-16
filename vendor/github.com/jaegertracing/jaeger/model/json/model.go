@@ -1,3 +1,4 @@
+// Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -107,4 +108,10 @@ type DependencyLink struct {
 	Parent    string `json:"parent"`
 	Child     string `json:"child"`
 	CallCount uint64 `json:"callCount"`
+}
+
+// Operation defines the data in the operation response when query operation by service and span kind
+type Operation struct {
+	Name     string `json:"name"`
+	SpanKind string `json:"spanKind"`
 }

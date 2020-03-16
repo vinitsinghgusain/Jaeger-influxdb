@@ -1,14 +1,15 @@
 package execute
 
 import (
-	"fmt"
+	"context"
 	"regexp"
 
 	"github.com/influxdata/flux"
+	"github.com/influxdata/flux/codes"
 	"github.com/influxdata/flux/compiler"
+	"github.com/influxdata/flux/internal/errors"
 	"github.com/influxdata/flux/semantic"
 	"github.com/influxdata/flux/values"
-	"github.com/pkg/errors"
 )
 
 type dynamicFn struct {
@@ -24,8 +25,7 @@ type dynamicFn struct {
 	references []string
 }
 
-func newDynamicFn(fn *semantic.FunctionExpression) dynamicFn {
-	scope := flux.BuiltIns()
+func newDynamicFn(fn *semantic.FunctionExpression, scope compiler.Scope) dynamicFn {
 	return dynamicFn{
 		compilationCache: compiler.NewCompilationCache(fn, scope),
 		inRecord:         values.NewObject(),
@@ -54,9 +54,7 @@ func (f *dynamicFn) prepare(cols []flux.ColMeta, extraTypes map[string]semantic.
 	}
 
 	// Compile fn for given types
-	fn, err := f.compilationCache.Compile(
-		semantic.NewObjectType(extraTypes),
-	)
+	fn, err := f.compilationCache.Compile(semantic.NewObjectType(extraTypes))
 	if err != nil {
 		return err
 	}
@@ -112,26 +110,26 @@ type tableFn struct {
 	dynamicFn
 }
 
-func newTableFn(fn *semantic.FunctionExpression) tableFn {
+func newTableFn(fn *semantic.FunctionExpression, scope compiler.Scope) tableFn {
 	return tableFn{
-		dynamicFn: newDynamicFn(fn),
+		dynamicFn: newDynamicFn(fn, scope),
 	}
 }
 
-func (f *tableFn) eval(tbl flux.Table) (values.Value, error) {
+func (f *tableFn) eval(ctx context.Context, tbl flux.Table) (values.Value, error) {
 	for r, col := range f.recordCols {
 		f.record.Set(r, tbl.Key().Value(col))
 	}
 	f.inRecord.Set(f.recordName, f.record)
-	return f.preparedFn.Eval(f.inRecord)
+	return f.preparedFn.Eval(ctx, f.inRecord)
 }
 
 type TablePredicateFn struct {
 	tableFn
 }
 
-func NewTablePredicateFn(fn *semantic.FunctionExpression) (*TablePredicateFn, error) {
-	t := newTableFn(fn)
+func NewTablePredicateFn(fn *semantic.FunctionExpression, scope compiler.Scope) (*TablePredicateFn, error) {
+	t := newTableFn(fn, scope)
 	return &TablePredicateFn{tableFn: t}, nil
 }
 
@@ -140,13 +138,13 @@ func (f *TablePredicateFn) Prepare(tbl flux.Table) error {
 		return err
 	}
 	if f.preparedFn.Type() != semantic.Bool {
-		return errors.New("table predicate function does not evaluate to a boolean")
+		return errors.New(codes.Invalid, "table predicate function does not evaluate to a boolean")
 	}
 	return nil
 }
 
-func (f *TablePredicateFn) Eval(tbl flux.Table) (bool, error) {
-	v, err := f.tableFn.eval(tbl)
+func (f *TablePredicateFn) Eval(ctx context.Context, tbl flux.Table) (bool, error) {
+	v, err := f.tableFn.eval(ctx, tbl)
 	if err != nil {
 		return false, err
 	}
@@ -157,13 +155,13 @@ type rowFn struct {
 	dynamicFn
 }
 
-func newRowFn(fn *semantic.FunctionExpression) (rowFn, error) {
+func newRowFn(fn *semantic.FunctionExpression, scope compiler.Scope) (rowFn, error) {
 	return rowFn{
-		dynamicFn: newDynamicFn(fn),
+		dynamicFn: newDynamicFn(fn, scope),
 	}, nil
 }
 
-func (f *rowFn) eval(row int, cr flux.ColReader, extraParams map[string]values.Value) (values.Value, error) {
+func (f *rowFn) eval(ctx context.Context, row int, cr flux.ColReader, extraParams map[string]values.Value) (values.Value, error) {
 	for r, col := range f.recordCols {
 		f.record.Set(r, ValueForRow(cr, row, col))
 	}
@@ -172,15 +170,15 @@ func (f *rowFn) eval(row int, cr flux.ColReader, extraParams map[string]values.V
 		f.inRecord.Set(k, v)
 	}
 
-	return f.preparedFn.Eval(f.inRecord)
+	return f.preparedFn.Eval(ctx, f.inRecord)
 }
 
 type RowPredicateFn struct {
 	rowFn
 }
 
-func NewRowPredicateFn(fn *semantic.FunctionExpression) (*RowPredicateFn, error) {
-	r, err := newRowFn(fn)
+func NewRowPredicateFn(fn *semantic.FunctionExpression, scope compiler.Scope) (*RowPredicateFn, error) {
+	r, err := newRowFn(fn, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -194,13 +192,27 @@ func (f *RowPredicateFn) Prepare(cols []flux.ColMeta) error {
 		return err
 	}
 	if f.preparedFn.Type() != semantic.Bool {
-		return errors.New("row predicate function does not evaluate to a boolean")
+		return errors.New(codes.Invalid, "row predicate function does not evaluate to a boolean")
 	}
 	return nil
 }
 
-func (f *RowPredicateFn) Eval(row int, cr flux.ColReader) (bool, error) {
-	v, err := f.rowFn.eval(row, cr, nil)
+func (f *RowPredicateFn) InputType() semantic.Type {
+	sig := f.preparedFn.FunctionSignature()
+	return sig.Parameters[f.recordName]
+}
+
+func (f *RowPredicateFn) EvalRow(ctx context.Context, row int, cr flux.ColReader) (bool, error) {
+	v, err := f.rowFn.eval(ctx, row, cr, nil)
+	if err != nil {
+		return false, err
+	}
+	return !v.IsNull() && v.Bool(), nil
+}
+
+func (f *RowPredicateFn) Eval(ctx context.Context, record values.Object) (bool, error) {
+	f.inRecord.Set(f.recordName, record)
+	v, err := f.preparedFn.Eval(ctx, f.inRecord)
 	if err != nil {
 		return false, err
 	}
@@ -211,8 +223,8 @@ type RowMapFn struct {
 	rowFn
 }
 
-func NewRowMapFn(fn *semantic.FunctionExpression) (*RowMapFn, error) {
-	r, err := newRowFn(fn)
+func NewRowMapFn(fn *semantic.FunctionExpression, scope compiler.Scope) (*RowMapFn, error) {
+	r, err := newRowFn(fn, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +240,7 @@ func (f *RowMapFn) Prepare(cols []flux.ColMeta) error {
 	}
 	k := f.preparedFn.Type().Nature()
 	if k != semantic.Object {
-		return fmt.Errorf("map function must return an object, got %s", k.String())
+		return errors.Newf(codes.Invalid, "map function must return an object, got %s", k.String())
 	}
 	return nil
 }
@@ -237,8 +249,8 @@ func (f *RowMapFn) Type() semantic.Type {
 	return f.preparedFn.Type()
 }
 
-func (f *RowMapFn) Eval(row int, cr flux.ColReader) (values.Object, error) {
-	v, err := f.rowFn.eval(row, cr, nil)
+func (f *RowMapFn) Eval(ctx context.Context, row int, cr flux.ColReader) (values.Object, error) {
+	v, err := f.rowFn.eval(ctx, row, cr, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -251,8 +263,8 @@ type RowReduceFn struct {
 	wrapObj *Record
 }
 
-func NewRowReduceFn(fn *semantic.FunctionExpression) (*RowReduceFn, error) {
-	r, err := newRowFn(fn)
+func NewRowReduceFn(fn *semantic.FunctionExpression, scope compiler.Scope) (*RowReduceFn, error) {
+	r, err := newRowFn(fn, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -283,8 +295,8 @@ func (f *RowReduceFn) Type() semantic.Type {
 	return f.preparedFn.Type()
 }
 
-func (f *RowReduceFn) Eval(row int, cr flux.ColReader, extraParams map[string]values.Value) (values.Object, error) {
-	v, err := f.rowFn.eval(row, cr, extraParams)
+func (f *RowReduceFn) Eval(ctx context.Context, row int, cr flux.ColReader, extraParams map[string]values.Value) (values.Object, error) {
+	v, err := f.rowFn.eval(ctx, row, cr, extraParams)
 	if err != nil {
 		return nil, err
 	}
@@ -343,6 +355,9 @@ func (r *Record) IsNull() bool {
 }
 func (r *Record) Str() string {
 	panic(values.UnexpectedKind(semantic.Object, semantic.String))
+}
+func (r *Record) Bytes() []byte {
+	panic(values.UnexpectedKind(semantic.Object, semantic.Bytes))
 }
 func (r *Record) Int() int64 {
 	panic(values.UnexpectedKind(semantic.Object, semantic.Int))

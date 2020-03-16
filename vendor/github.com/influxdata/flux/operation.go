@@ -2,9 +2,9 @@ package flux
 
 import (
 	"encoding/json"
-	"fmt"
 
-	"github.com/pkg/errors"
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 )
 
 // Operation denotes a single operation in a query.
@@ -29,7 +29,7 @@ func (o *Operation) UnmarshalJSON(data []byte) error {
 	}
 	spec, err := unmarshalOpSpec(raw.Kind, raw.Spec)
 	if err != nil {
-		return errors.Wrapf(err, "failed to unmarshal operation %q", o.ID)
+		return errors.Wrapf(err, codes.Inherit, "failed to unmarshal operation %q", o.ID)
 	}
 	o.Spec = spec
 	return nil
@@ -38,7 +38,7 @@ func (o *Operation) UnmarshalJSON(data []byte) error {
 func unmarshalOpSpec(k OperationKind, data []byte) (OperationSpec, error) {
 	createOpSpec, ok := kindToOp[k]
 	if !ok {
-		return nil, fmt.Errorf("unknown operation spec kind %v", k)
+		return nil, errors.Newf(codes.Invalid, "unknown operation spec kind %v", k)
 	}
 	spec := createOpSpec()
 
@@ -85,7 +85,7 @@ var kindToOp = make(map[OperationKind]NewOperationSpec)
 // TODO:(nathanielc) make this part of RegisterMethod/RegisterFunction
 func RegisterOpSpec(k OperationKind, c NewOperationSpec) {
 	if kindToOp[k] != nil {
-		panic(fmt.Errorf("duplicate registration for operation kind %v", k))
+		panic(errors.Newf(codes.Internal, "duplicate registration for operation kind %v", k))
 	}
 	kindToOp[k] = c
 }

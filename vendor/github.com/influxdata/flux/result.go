@@ -7,7 +7,6 @@ import (
 	"github.com/influxdata/flux/iocounter"
 	"github.com/influxdata/flux/semantic"
 	"github.com/influxdata/flux/values"
-	"github.com/pkg/errors"
 )
 
 type Result interface {
@@ -38,7 +37,7 @@ type Table interface {
 	Do(f func(ColReader) error) error
 
 	// Done indicates that this table is no longer needed and that the
-	// underlying processer that produces the table may discard any
+	// underlying processor that produces the table may discard any
 	// buffers that need to be processed. If the table has already been
 	// read with Do, this happens automatically.
 	// This is also not required if the table is empty.
@@ -54,6 +53,14 @@ type Table interface {
 // data buffered.
 type BufferedTable interface {
 	Table
+
+	// Buffer returns the i'th buffer in the buffered table.
+	// This allows accessing the buffered table contents without
+	// using the Table.
+	Buffer(i int) ColReader
+
+	// BufferN returns the number of buffers in this table.
+	BufferN() int
 
 	// Copy will return a copy of the BufferedTable without
 	// consuming the Table itself. If this Table has already
@@ -245,10 +252,10 @@ type EncoderError interface {
 	IsEncoderError() bool
 }
 
-// IsEncoderError reports whether or not the underlying cause of
+// isEncoderError reports whether or not the underlying cause of
 // an error is a valid EncoderError.
-func IsEncoderError(err error) bool {
-	encErr, ok := errors.Cause(err).(EncoderError)
+func isEncoderError(err error) bool {
+	encErr, ok := err.(EncoderError)
 	return ok && encErr.IsEncoderError()
 }
 
@@ -287,7 +294,7 @@ func (e *DelimitedMultiResultEncoder) Encode(w io.Writer, results ResultIterator
 		if _, err := e.Encoder.Encode(wc, result); err != nil {
 			// If we have an error that's from encoding or if we have not
 			// yet written any data to the writer, return the error.
-			if IsEncoderError(err) || wc.Count() == 0 {
+			if isEncoderError(err) || wc.Count() == 0 {
 				return wc.Count(), err
 			}
 			// Otherwise, the error happened during query execution and we

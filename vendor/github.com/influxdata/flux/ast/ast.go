@@ -91,6 +91,8 @@ func (*TestStatement) node()       {}
 func (*VariableAssignment) node()  {}
 func (*MemberAssignment) node()    {}
 
+func (*StringExpression) node()      {}
+func (*ParenExpression) node()       {}
 func (*ArrayExpression) node()       {}
 func (*FunctionExpression) node()    {}
 func (*BinaryExpression) node()      {}
@@ -105,6 +107,9 @@ func (*UnaryExpression) node()       {}
 
 func (*Property) node()   {}
 func (*Identifier) node() {}
+
+func (*TextPart) node()         {}
+func (*InterpolatedPart) node() {}
 
 func (*BooleanLiteral) node()         {}
 func (*DateTimeLiteral) node()        {}
@@ -186,10 +191,11 @@ func (p *Package) Copy() Node {
 // File represents a source from a single file
 type File struct {
 	BaseNode
-	Name    string               `json:"name,omitempty"` // name of the file
-	Package *PackageClause       `json:"package"`
-	Imports []*ImportDeclaration `json:"imports"`
-	Body    []Statement          `json:"body"`
+	Name     string               `json:"name,omitempty"` // name of the file
+	Metadata string               `json:"metadata,omitempty"`
+	Package  *PackageClause       `json:"package"`
+	Imports  []*ImportDeclaration `json:"imports"`
+	Body     []Statement          `json:"body"`
 }
 
 // Type is the abstract type
@@ -363,6 +369,7 @@ type ReturnStatement struct {
 
 // Type is the abstract type
 func (*ReturnStatement) Type() string { return "ReturnStatement" }
+
 func (s *ReturnStatement) Copy() Node {
 	if s == nil {
 		return s
@@ -510,6 +517,8 @@ type Expression interface {
 	expression()
 }
 
+func (*StringExpression) expression()       {}
+func (*ParenExpression) expression()        {}
 func (*ArrayExpression) expression()        {}
 func (*FunctionExpression) expression()     {}
 func (*BinaryExpression) expression()       {}
@@ -531,6 +540,101 @@ func (*RegexpLiteral) expression()          {}
 func (*StringLiteral) expression()          {}
 func (*UnaryExpression) expression()        {}
 func (*UnsignedIntegerLiteral) expression() {}
+
+type StringExpression struct {
+	BaseNode
+
+	Parts []StringExpressionPart `json:"parts"`
+}
+
+func (*StringExpression) Type() string { return "StringExpression" }
+
+func (e *StringExpression) Copy() Node {
+	if e == nil {
+		return e
+	}
+	ne := new(StringExpression)
+	*ne = *e
+	ne.BaseNode = e.BaseNode.Copy()
+
+	if len(e.Parts) > 0 {
+		ne.Parts = make([]StringExpressionPart, len(e.Parts))
+		for i, p := range e.Parts {
+			ne.Parts[i] = p.Copy().(StringExpressionPart)
+		}
+	}
+
+	return ne
+}
+
+type StringExpressionPart interface {
+	Node
+	stringPart()
+}
+
+func (*TextPart) stringPart()         {}
+func (*InterpolatedPart) stringPart() {}
+
+type TextPart struct {
+	BaseNode
+	Value string `json:"value"`
+}
+
+func (*TextPart) Type() string { return "TextPart" }
+
+func (p *TextPart) Copy() Node {
+	if p == nil {
+		return p
+	}
+	np := new(TextPart)
+	*np = *p
+	np.BaseNode = p.BaseNode.Copy()
+	return np
+}
+
+type InterpolatedPart struct {
+	BaseNode
+	Expression Expression `json:"expression"`
+}
+
+func (*InterpolatedPart) Type() string { return "InterpolatedPart" }
+
+func (p *InterpolatedPart) Copy() Node {
+	if p == nil {
+		return p
+	}
+	np := new(InterpolatedPart)
+	*np = *p
+	np.BaseNode = p.BaseNode.Copy()
+
+	if p.Expression != nil {
+		np.Expression = p.Expression.Copy().(Expression)
+	}
+	return np
+}
+
+// ParenExpression represents an expressions that is wrapped in parentheses in the source code.
+// It has no semantic meaning, rather it only communicates information about the syntax of the source code.
+type ParenExpression struct {
+	BaseNode
+	Expression Expression `json:"expression"`
+}
+
+func (*ParenExpression) Type() string { return "ParenExpression" }
+
+func (e *ParenExpression) Copy() Node {
+	if e == nil {
+		return e
+	}
+	ne := new(ParenExpression)
+	*ne = *e
+	ne.BaseNode = e.BaseNode.Copy()
+
+	if e.Expression != nil {
+		ne.Expression = e.Expression.Copy().(Expression)
+	}
+	return ne
+}
 
 // CallExpression represents a function call
 type CallExpression struct {
@@ -732,7 +836,7 @@ func (o *OperatorKind) UnmarshalText(data []byte) error {
 }
 
 // BinaryExpression use binary operators act on two operands in an expression.
-// BinaryExpression includes relational and arithmatic operators
+// BinaryExpression includes relational and arithmetic operators
 type BinaryExpression struct {
 	BaseNode
 	Operator OperatorKind `json:"operator"`
@@ -812,6 +916,7 @@ func (o LogicalOperatorKind) MarshalText() ([]byte, error) {
 	}
 	return []byte(text), nil
 }
+
 func (o *LogicalOperatorKind) UnmarshalText(data []byte) error {
 	var ok bool
 	*o, ok = logOperators[string(data)]
@@ -1001,7 +1106,7 @@ func (i *Identifier) Copy() Node {
 // Literals must be coerced explicitly.
 type Literal interface {
 	Expression
-	literal() //lint:ignore U1000 Yes, this function is unused, but it's here to limit the implementers of the Literal interface.
+	literal()
 }
 
 func (*BooleanLiteral) literal()         {}
@@ -1022,14 +1127,14 @@ type PipeLiteral struct {
 // Type is the abstract type
 func (*PipeLiteral) Type() string { return "PipeLiteral" }
 
-func (i *PipeLiteral) Copy() Node {
-	if i == nil {
-		return i
+func (p *PipeLiteral) Copy() Node {
+	if p == nil {
+		return p
 	}
-	ni := new(PipeLiteral)
-	*ni = *i
-	ni.BaseNode = i.BaseNode.Copy()
-	return ni
+	np := new(PipeLiteral)
+	*np = *p
+	np.BaseNode = p.BaseNode.Copy()
+	return np
 }
 
 // StringLiteral expressions begin and end with double quote marks.
@@ -1196,6 +1301,19 @@ func toDuration(l Duration) (time.Duration, error) {
 	}
 	return dur, err
 }
+
+const (
+	NanosecondUnit  = "ns"
+	MicrosecondUnit = "us"
+	MillisecondUnit = "ms"
+	SecondUnit      = "s"
+	MinuteUnit      = "m"
+	HourUnit        = "h"
+	DayUnit         = "d"
+	WeekUnit        = "w"
+	MonthUnit       = "mo"
+	YearUnit        = "y"
+)
 
 // DurationLiteral represents the elapsed time between two instants as an
 // int64 nanosecond count with syntax of golang's time.Duration

@@ -2,13 +2,12 @@ package arrow
 
 import (
 	"github.com/apache/arrow/go/arrow/array"
-	arrowmemory "github.com/apache/arrow/go/arrow/memory"
 	"github.com/influxdata/flux/memory"
 )
 
 func NewInt(vs []int64, alloc *memory.Allocator) *array.Int64 {
 	b := NewIntBuilder(alloc)
-	b.Reserve(len(vs))
+	b.Resize(len(vs))
 	for _, v := range vs {
 		b.UnsafeAppend(v)
 	}
@@ -18,18 +17,9 @@ func NewInt(vs []int64, alloc *memory.Allocator) *array.Int64 {
 }
 
 func IntSlice(arr *array.Int64, i, j int) *array.Int64 {
-	data := array.NewSliceData(arr.Data(), int64(i), int64(j))
-	defer data.Release()
-	return array.NewInt64Data(data)
+	return Slice(arr, int64(i), int64(j)).(*array.Int64)
 }
 
 func NewIntBuilder(a *memory.Allocator) *array.Int64Builder {
-	var alloc arrowmemory.Allocator = arrowmemory.NewGoAllocator()
-	if a != nil {
-		alloc = &allocator{
-			Allocator: alloc,
-			alloc:     a,
-		}
-	}
-	return array.NewInt64Builder(alloc)
+	return array.NewInt64Builder(a)
 }

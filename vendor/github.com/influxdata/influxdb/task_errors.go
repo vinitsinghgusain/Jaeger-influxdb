@@ -2,7 +2,6 @@ package influxdb
 
 import (
 	"fmt"
-	"time"
 )
 
 var (
@@ -48,6 +47,11 @@ var (
 		Msg:  "run not found",
 	}
 
+	ErrRunKeyNotFound = &Error{
+		Code: ENotFound,
+		Msg:  "run key not found",
+	}
+
 	ErrPageSizeTooSmall = &Error{
 		Msg:  "cannot have negative page limit",
 		Code: EInvalid,
@@ -73,13 +77,49 @@ var (
 		Code: EUnprocessableEntity,
 		Msg:  "run limit is out of bounds, must be between 1 and 500",
 	}
+
+	// ErrInvalidOwnerID is called when trying to create a task with out a valid ownerID
+	ErrInvalidOwnerID = &Error{
+		Code: EInvalid,
+		Msg:  "cannot create task with invalid ownerID",
+	}
 )
+
+// ErrFluxParseError is returned when an error is thrown by Flux.Parse in the task executor
+func ErrFluxParseError(err error) *Error {
+	return &Error{
+		Code: EInvalid,
+		Msg:  fmt.Sprintf("could not parse Flux script; Err: %v", err),
+		Op:   "taskExecutor",
+		Err:  err,
+	}
+}
+
+// ErrQueryError is returned when an error is thrown by Query service in the task executor
+func ErrQueryError(err error) *Error {
+	return &Error{
+		Code: EInternal,
+		Msg:  fmt.Sprintf("unexpected error from queryd; Err: %v", err),
+		Op:   "taskExecutor",
+		Err:  err,
+	}
+}
+
+// ErrResultIteratorError is returned when an error is thrown by exhaustResultIterators in the executor
+func ErrResultIteratorError(err error) *Error {
+	return &Error{
+		Code: EInvalid,
+		Msg:  fmt.Sprintf("Error exhausting result iterator; Err: %v", err),
+		Op:   "taskExecutor",
+		Err:  err,
+	}
+}
 
 func ErrInternalTaskServiceError(err error) *Error {
 	return &Error{
 		Code: EInternal,
 		Msg:  fmt.Sprintf("unexpected error in tasks; Err: %v", err),
-		Op:   "kv/task",
+		Op:   "task",
 		Err:  err,
 	}
 }
@@ -89,7 +129,7 @@ func ErrUnexpectedTaskBucketErr(err error) *Error {
 	return &Error{
 		Code: EInternal,
 		Msg:  fmt.Sprintf("unexpected error retrieving task bucket; Err: %v", err),
-		Op:   "kv/taskBucket",
+		Op:   "taskBucket",
 		Err:  err,
 	}
 }
@@ -97,9 +137,9 @@ func ErrUnexpectedTaskBucketErr(err error) *Error {
 // ErrTaskTimeParse an error for time parsing errors
 func ErrTaskTimeParse(err error) *Error {
 	return &Error{
-		Code: EInvalid,
+		Code: EInternal,
 		Msg:  fmt.Sprintf("unexpected error parsing time; Err: %v", err),
-		Op:   "kv/taskCron",
+		Op:   "taskCron",
 		Err:  err,
 	}
 }
@@ -108,15 +148,33 @@ func ErrTaskOptionParse(err error) *Error {
 	return &Error{
 		Code: EInvalid,
 		Msg:  fmt.Sprintf("invalid options; Err: %v", err),
-		Op:   "kv/taskOptions",
+		Op:   "taskOptions",
 		Err:  err,
 	}
 }
 
-// ErrRunNotDueYet is returned from CreateNextRun if a run is not yet due.
-func ErrRunNotDueYet(dueAt int64) *Error {
+func ErrJsonMarshalError(err error) *Error {
 	return &Error{
 		Code: EInvalid,
-		Msg:  fmt.Sprintf("run not due until: %v", time.Unix(dueAt, 0).UTC().Format(time.RFC3339)),
+		Msg:  fmt.Sprintf("unable to marshal JSON; Err: %v", err),
+		Op:   "taskScheduler",
+		Err:  err,
+	}
+}
+
+func ErrRunExecutionError(err error) *Error {
+	return &Error{
+		Code: EInternal,
+		Msg:  fmt.Sprintf("could not execute task run; Err: %v", err),
+		Op:   "taskExecutor",
+		Err:  err,
+	}
+}
+
+func ErrTaskConcurrencyLimitReached(runsInFront int) *Error {
+	return &Error{
+		Code: ETooManyRequests,
+		Msg:  fmt.Sprintf("could not execute task, concurrency limit reached, runs in front: %d", runsInFront),
+		Op:   "taskExecutor",
 	}
 }

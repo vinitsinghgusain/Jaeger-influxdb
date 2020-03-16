@@ -1,32 +1,30 @@
 package compiler
 
 import (
-	"fmt"
-
 	"github.com/influxdata/flux"
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 	"github.com/influxdata/flux/semantic"
 	"github.com/influxdata/flux/values"
-	"github.com/pkg/errors"
 )
 
-func Compile(f *semantic.FunctionExpression, in semantic.Type, builtins Scope) (Func, error) {
+func Compile(scope Scope, f *semantic.FunctionExpression, in semantic.Type) (Func, error) {
+	if scope == nil {
+		scope = NewScope()
+	}
 	if in.Nature() != semantic.Object {
-		return nil, errors.New("function input must be an object")
+		return nil, errors.Newf(codes.Invalid, "function input must be an object @ %v", f.Location())
 	}
-	declarations := externAssignments(builtins)
-	extern := &semantic.Extern{
-		Assignments: declarations,
-		Block:       &semantic.ExternBlock{Node: f},
-	}
+	extern := values.BuildExternAssignments(f, scope)
 
 	typeSol, err := semantic.InferTypes(extern, flux.StdLib())
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, codes.Inherit, "compile function @ %v", f.Location())
 	}
 
 	pt, err := typeSol.PolyTypeOf(f)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, codes.Inherit, "retreiving compile function @ %v", f.Location())
 	}
 	props := in.Properties()
 	parameters := make(map[string]semantic.PolyType, len(props))
@@ -38,21 +36,21 @@ func Compile(f *semantic.FunctionExpression, in semantic.Type, builtins Scope) (
 		Return:     typeSol.Fresh(),
 	})
 	if err := typeSol.AddConstraint(pt, fpt); err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, codes.Inherit, "cannot add type constraint @ %v", f.Location())
 	}
 	fnType, err := typeSol.TypeOf(f)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot compile polymorphic function")
+		return nil, errors.Wrapf(err, codes.Inherit, "cannot compile polymorphic function @ %v", f.Location())
 	}
 
-	root, err := compile(f.Block.Body, typeSol, builtins, make(map[string]*semantic.FunctionExpression))
+	root, err := compile(f.Block.Body, typeSol, scope, make(map[string]*semantic.FunctionExpression))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, codes.Inherit, "cannot compile @ %v", f.Location())
 	}
 	return compiledFn{
 		root:       root,
 		fnType:     fnType,
-		inputScope: make(Scope),
+		inputScope: nestScope(scope),
 	}, nil
 }
 
@@ -62,13 +60,19 @@ func monoType(t semantic.Type, err error) semantic.Type {
 	return t
 }
 
+// polyType ignores any errors when reading the type of a node.
+// This is safe becase we already validated that the function type is a poly type.
+func polyType(t semantic.PolyType, err error) semantic.PolyType {
+	return t
+}
+
 // compile recursively compiles semantic nodes into evaluators.
-func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, funcExprs map[string]*semantic.FunctionExpression) (Evaluator, error) {
+func compile(n semantic.Node, typeSol semantic.TypeSolution, scope Scope, funcExprs map[string]*semantic.FunctionExpression) (Evaluator, error) {
 	switch n := n.(type) {
 	case *semantic.Block:
 		body := make([]Evaluator, len(n.Body))
 		for i, s := range n.Body {
-			node, err := compile(s, typeSol, builtIns, funcExprs)
+			node, err := compile(s, typeSol, scope, funcExprs)
 			if err != nil {
 				return nil, err
 			}
@@ -79,9 +83,9 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			body: body,
 		}, nil
 	case *semantic.ExpressionStatement:
-		return nil, errors.New("statement does nothing, side effects are not supported by the compiler")
+		return nil, errors.New(codes.Internal, "statement does nothing, side effects are not supported by the compiler")
 	case *semantic.ReturnStatement:
-		node, err := compile(n.Argument, typeSol, builtIns, funcExprs)
+		node, err := compile(n.Argument, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
@@ -93,7 +97,7 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			funcExprs[n.Identifier.Name] = fe
 			return &noopEvaluator{}, nil
 		}
-		node, err := compile(n.Init, typeSol, builtIns, funcExprs)
+		node, err := compile(n.Init, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +114,7 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 		}
 
 		for _, p := range n.Properties {
-			node, err := compile(p.Value, typeSol, builtIns, funcExprs)
+			node, err := compile(p.Value, typeSol, scope, funcExprs)
 			if err != nil {
 				return nil, err
 			}
@@ -120,13 +124,13 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 		obj.properties = properties
 
 		if n.With != nil {
-			node, err := compile(n.With, typeSol, builtIns, funcExprs)
+			node, err := compile(n.With, typeSol, scope, funcExprs)
 			if err != nil {
 				return nil, err
 			}
 			with, ok := node.(*identifierEvaluator)
 			if !ok {
-				return nil, errors.New("unknown identifier in with expression")
+				return nil, errors.New(codes.Internal, "unknown identifier in with expression")
 			}
 			obj.with = with
 
@@ -143,7 +147,7 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			}, nil
 		}
 		for i, e := range n.Elements {
-			node, err := compile(e, typeSol, builtIns, funcExprs)
+			node, err := compile(e, typeSol, scope, funcExprs)
 			if err != nil {
 				return nil, err
 			}
@@ -154,13 +158,6 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			array: elements,
 		}, nil
 	case *semantic.IdentifierExpression:
-		if v, ok := builtIns[n.Name]; ok {
-			//Resolve any built in identifiers now
-			return &valueEvaluator{
-				value: v,
-			}, nil
-		}
-
 		// Create type instance of the function
 		if fe, ok := funcExprs[n.Name]; ok {
 			it, err := typeSol.PolyTypeOf(n)
@@ -180,28 +177,28 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 				return nil, err
 			}
 
-			return compile(fe, typeSol, builtIns, funcExprs)
+			return compile(fe, typeSol, scope, funcExprs)
 		}
 		return &identifierEvaluator{
-			t:    monoType(typeSol.TypeOf(n)),
+			t:    polyType(typeSol.PolyTypeOf(n)),
 			name: n.Name,
 		}, nil
 	case *semantic.MemberExpression:
-		object, err := compile(n.Object, typeSol, builtIns, funcExprs)
+		object, err := compile(n.Object, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
 		return &memberEvaluator{
-			t:        monoType(typeSol.TypeOf(n)),
+			t:        polyType(typeSol.PolyTypeOf(n)),
 			object:   object,
 			property: n.Property,
 		}, nil
 	case *semantic.IndexExpression:
-		arr, err := compile(n.Array, typeSol, builtIns, funcExprs)
+		arr, err := compile(n.Array, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
-		idx, err := compile(n.Index, typeSol, builtIns, funcExprs)
+		idx, err := compile(n.Index, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
@@ -210,6 +207,31 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			array: arr,
 			index: idx,
 		}, nil
+	case *semantic.StringExpression:
+		parts := make([]Evaluator, len(n.Parts))
+		for i, p := range n.Parts {
+			e, err := compile(p, typeSol, scope, funcExprs)
+			if err != nil {
+				return nil, err
+			}
+			parts[i] = e
+		}
+		return &stringExpressionEvaluator{
+			t:     monoType(typeSol.TypeOf(n)),
+			parts: parts,
+		}, nil
+	case *semantic.TextPart:
+		return &textEvaluator{
+			value: n.Value,
+		}, nil
+	case *semantic.InterpolatedPart:
+		e, err := compile(n.Expression, typeSol, scope, funcExprs)
+		if err != nil {
+			return nil, err
+		}
+		return &interpolatedEvaluator{
+			s: e,
+		}, nil
 	case *semantic.BooleanLiteral:
 		return &booleanEvaluator{
 			t: monoType(typeSol.TypeOf(n)),
@@ -217,6 +239,11 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 		}, nil
 	case *semantic.IntegerLiteral:
 		return &integerEvaluator{
+			t: monoType(typeSol.TypeOf(n)),
+			i: n.Value,
+		}, nil
+	case *semantic.UnsignedIntegerLiteral:
+		return &unsignedIntegerEvaluator{
 			t: monoType(typeSol.TypeOf(n)),
 			i: n.Value,
 		}, nil
@@ -241,12 +268,16 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			time: values.ConvertTime(n.Value),
 		}, nil
 	case *semantic.DurationLiteral:
+		v, err := values.FromDurationValues(n.Values)
+		if err != nil {
+			return nil, err
+		}
 		return &durationEvaluator{
 			t:        monoType(typeSol.TypeOf(n)),
-			duration: values.Duration(n.Value),
+			duration: v,
 		}, nil
 	case *semantic.UnaryExpression:
-		node, err := compile(n.Argument, typeSol, builtIns, funcExprs)
+		node, err := compile(n.Argument, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
@@ -256,11 +287,11 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			op:   n.Operator,
 		}, nil
 	case *semantic.LogicalExpression:
-		l, err := compile(n.Left, typeSol, builtIns, funcExprs)
+		l, err := compile(n.Left, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
-		r, err := compile(n.Right, typeSol, builtIns, funcExprs)
+		r, err := compile(n.Right, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
@@ -271,15 +302,15 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			right:    r,
 		}, nil
 	case *semantic.ConditionalExpression:
-		test, err := compile(n.Test, typeSol, builtIns, funcExprs)
+		test, err := compile(n.Test, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
-		c, err := compile(n.Consequent, typeSol, builtIns, funcExprs)
+		c, err := compile(n.Consequent, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
-		a, err := compile(n.Alternate, typeSol, builtIns, funcExprs)
+		a, err := compile(n.Alternate, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
@@ -290,20 +321,20 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			alternate:  a,
 		}, nil
 	case *semantic.BinaryExpression:
-		l, err := compile(n.Left, typeSol, builtIns, funcExprs)
+		l, err := compile(n.Left, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
 		lt := l.Type()
-		r, err := compile(n.Right, typeSol, builtIns, funcExprs)
+		r, err := compile(n.Right, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
 		rt := r.Type()
 		f, err := values.LookupBinaryFunction(values.BinaryFuncSignature{
 			Operator: n.Operator,
-			Left:     lt,
-			Right:    rt,
+			Left:     lt.Nature(),
+			Right:    rt.Nature(),
 		})
 		if err != nil {
 			return nil, err
@@ -315,11 +346,11 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			f:     f,
 		}, nil
 	case *semantic.CallExpression:
-		args, err := compile(n.Arguments, typeSol, builtIns, funcExprs)
+		args, err := compile(n.Arguments, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
-		callee, err := compile(n.Callee, typeSol, builtIns, funcExprs)
+		callee, err := compile(n.Callee, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
@@ -330,7 +361,7 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 		}, nil
 	case *semantic.FunctionExpression:
 		fnType := monoType(typeSol.TypeOf(n))
-		body, err := compile(n.Block.Body, typeSol, builtIns, funcExprs)
+		body, err := compile(n.Block.Body, typeSol, scope, funcExprs)
 		if err != nil {
 			return nil, err
 		}
@@ -345,7 +376,7 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 				// Search for default value
 				for _, d := range n.Defaults.Properties {
 					if d.Key.Key() == k {
-						d, err := compile(d.Value, typeSol, builtIns, funcExprs)
+						d, err := compile(d.Value, typeSol, scope, funcExprs)
 						if err != nil {
 							return nil, err
 						}
@@ -362,7 +393,7 @@ func compile(n semantic.Node, typeSol semantic.TypeSolution, builtIns Scope, fun
 			body:   body,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unknown semantic node of type %T", n)
+		return nil, errors.Newf(codes.Internal, "unknown semantic node of type %T", n)
 	}
 }
 
@@ -388,7 +419,7 @@ func (c *CompilationCache) Compile(in semantic.Type) (Func, error) {
 	if ok {
 		return f.F, f.Err
 	}
-	fun, err := Compile(c.fn, in, c.scope)
+	fun, err := Compile(c.scope, c.fn, in)
 	c.compiled[in] = funcErr{
 		F:   fun,
 		Err: err,
@@ -401,14 +432,13 @@ type funcErr struct {
 	Err error
 }
 
-// Utility function for compiling an `fn` parameter for rename or drop/keep. In addition
+// CompileFnParam is a utility function for compiling an `fn` parameter for rename or drop/keep. In addition
 // to the function expression, it takes two types to verify the result against:
 // a single argument type, and a single return type.
-func CompileFnParam(fn *semantic.FunctionExpression, paramType, returnType semantic.Type) (Func, string, error) {
-	scope := flux.BuiltIns()
+func CompileFnParam(fn *semantic.FunctionExpression, scope Scope, paramType, returnType semantic.Type) (Func, string, error) {
 	compileCache := NewCompilationCache(fn, scope)
 	if fn.Block.Parameters != nil && len(fn.Block.Parameters.List) != 1 {
-		return nil, "", errors.New("function should only have a single parameter")
+		return nil, "", errors.New(codes.Invalid, "function should only have a single parameter")
 	}
 	paramName := fn.Block.Parameters.List[0].Key.Name
 
@@ -420,44 +450,8 @@ func CompileFnParam(fn *semantic.FunctionExpression, paramType, returnType seman
 	}
 
 	if compiled.Type() != returnType {
-		return nil, "", fmt.Errorf("provided function does not evaluate to type %s", returnType.Nature())
+		return nil, "", errors.Newf(codes.Invalid, "provided function does not evaluate to type %s", returnType.Nature())
 	}
 
 	return compiled, paramName, nil
-}
-
-func CompileReduceFn(fn *semantic.FunctionExpression, paramType semantic.Type) (Func, []string, error) {
-	scope := flux.BuiltIns()
-	compileCache := NewCompilationCache(fn, scope)
-	if len(fn.Block.Parameters.List) != 2 {
-		return nil, nil, errors.New("function should only have a single parameter")
-	}
-	paramList := fn.Block.Parameters.List
-	paramNames := []string{paramList[0].Key.Name, paramList[1].Key.Name}
-
-	compiled, err := compileCache.Compile(semantic.NewObjectType(map[string]semantic.Type{
-		paramNames[0]: paramType,
-		paramNames[1]: paramType,
-	}))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if compiled.Type() != paramType {
-		return nil, nil, fmt.Errorf("provided function does not evaluate to type %s", paramType.Nature())
-	}
-
-	return compiled, paramNames, nil
-}
-
-// externAssignments produces a list of external declarations from a scope
-func externAssignments(scope Scope) []*semantic.ExternalVariableAssignment {
-	declarations := make([]*semantic.ExternalVariableAssignment, 0, len(scope))
-	for k, v := range scope {
-		declarations = append(declarations, &semantic.ExternalVariableAssignment{
-			Identifier: &semantic.Identifier{Name: k},
-			ExternType: v.PolyType(),
-		})
-	}
-	return declarations
 }

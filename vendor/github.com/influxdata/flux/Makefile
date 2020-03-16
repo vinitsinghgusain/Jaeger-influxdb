@@ -1,6 +1,4 @@
-# Top level Makefile for the entire project
-#
-# This Makefile encodes the "go generate" prerequeisites ensuring that the proper tooling is installed and
+# This Makefile encodes the "go generate" prerequisites ensuring that the proper tooling is installed and
 # that the generate steps are executed when their prerequeisites files change.
 #
 # This Makefile follows a few conventions:
@@ -11,40 +9,127 @@
 #    * All recursive Makefiles must support the targets: generate and clean.
 #
 
-SUBDIRS = ast/asttest internal/scanner stdlib internal/rust
+SHELL := /bin/bash
 
+GO_TAGS=libflux
 GO_ARGS=-tags '$(GO_TAGS)'
 
 # Test vars can be used by all recursive Makefiles
 export GOOS=$(shell go env GOOS)
-export GO_BUILD=env GO111MODULE=on go build $(GO_ARGS)
-export GO_TEST=env GO111MODULE=on go test $(GO_ARGS)
+export GO_BUILD=env FLUX_PARSER_TYPE=rust GO111MODULE=on go build $(GO_ARGS)
+export GO_TEST=env FLUX_PARSER_TYPE=rust GO111MODULE=on go test $(GO_ARGS)
 export GO_TEST_FLAGS=
 # Do not add GO111MODULE=on to the call to go generate so it doesn't pollute the environment.
 export GO_GENERATE=go generate $(GO_ARGS)
-export GO_VET=env GO111MODULE=on go vet $(GO_ARGS)
+export GO_VET=env FLUX_PARSER_TYPE=rust GO111MODULE=on go vet $(GO_ARGS)
+export CARGO=cargo
+export CARGO_ARGS=
+export VALGRIND=valgrind
+export VALGRIND_ARGS=--leak-check=full --error-exitcode=1
 
-# List of utilities to build as part of the build process
-UTILS := \
-	bin/$(GOOS)/cmpgen
+define go_deps
+	$(shell env GO111MODULE=on go list -f "{{range .GoFiles}} {{$$.Dir}}/{{.}}{{end}}" $(1))
+endef
 
-generate: $(UTILS) $(SUBDIRS)
+LIBFLUX_MEMTEST_BIN=libflux/c/libflux_memory_tester
 
-rust: build
+default: build
 
-build: internal/rust
+STDLIB_SOURCES = $(shell find . -name '*.flux')
 
-$(SUBDIRS): $(UTILS)
-	$(MAKE) -C $@ $(MAKECMDGOALS)
+GENERATED_TARGETS = \
+	ast/internal/fbast \
+	ast/asttest/cmpopts.go \
+	internal/scanner/scanner.gen.go \
+	stdlib/packages.go \
+	semantic/flatbuffers_gen.go \
+	semantic/internal/fbsemantic \
+	libflux/src/flux/ast/flatbuffers/ast_generated.rs \
+	libflux/src/flux/semantic/flatbuffers/semantic_generated.rs \
+	libflux/scanner.c \
+	libflux/go/libflux/flux.h
 
-clean: $(SUBDIRS)
+generate: $(GENERATED_TARGETS)
+
+ast/internal/fbast: ast/ast.fbs
+	$(GO_GENERATE) ./ast
+libflux/src/flux/ast/flatbuffers/ast_generated.rs: ast/ast.fbs
+	flatc --rust -o libflux/src/flux/ast/flatbuffers ast/ast.fbs && rustfmt $@
+
+semantic/internal/fbsemantic semantic/flatbuffers_gen.go: semantic/semantic.fbs semantic/graph.go internal/cmd/fbgen/cmd/semantic.go
+	$(GO_GENERATE) ./semantic
+libflux/src/flux/semantic/flatbuffers/semantic_generated.rs: semantic/semantic.fbs
+	flatc --rust -o libflux/src/flux/semantic/flatbuffers semantic/semantic.fbs && rustfmt $@
+
+# Force a second expansion to happen so the call to go_deps works correctly.
+.SECONDEXPANSION:
+ast/asttest/cmpopts.go: ast/ast.go ast/asttest/gen.go $$(call go_deps,./internal/cmd/cmpgen)
+	$(GO_GENERATE) ./ast/asttest
+
+stdlib/packages.go: $(STDLIB_SOURCES)
+	$(GO_GENERATE) ./stdlib
+
+internal/scanner/unicode.rl: internal/scanner/unicode2ragel.rb
+	cd internal/scanner && ruby unicode2ragel.rb -e utf8 -o unicode.rl
+internal/scanner/scanner.gen.go: internal/scanner/gen.go internal/scanner/scanner.rl internal/scanner/unicode.rl
+	$(GO_GENERATE) ./internal/scanner
+
+libflux: libflux/target/debug/libflux.a libflux/target/debug/liblibstd.a
+
+# Build the rust static library. Afterwards, fix the .d file that
+# rust generates so it references the correct targets.
+# The unix sed, which is on darwin machines, has a different
+# command line interface than the gnu equivalent.
+libflux/target/debug/libflux.a:
+	cd libflux && $(CARGO) build -p flux $(CARGO_ARGS)
+
+libflux/target/debug/liblibstd.a:
+	cd libflux && $(CARGO) build -p libstd $(CARGO_ARGS)
+
+libflux/go/libflux/flux.h: libflux/include/influxdata/flux.h
+	$(GO_GENERATE) ./libflux/go/libflux
+
+# The dependency file produced by Rust appears to be wrong and uses
+# absolute paths while we use relative paths everywhere. So we need
+# to do some post processing of the file to ensure that the
+# dependencies we load are correct. But, we do not want to trigger
+# a rust build just to load the dependencies since we may not need
+# to build the static library to begin with.
+# It is good enough for us to include this target so that the makefile
+# doesn't error when the file doesn't exist. It does not actually
+# have to create the file, just promise that the file will be created.
+# If the .d file does not exist, then the .a file above also
+# does not exist so the dependencies don't matter. If the .d file
+# exists, this will never get called or, at a minimum, it won't modify
+# the files at all. This allows the target below to depend on this
+# file without the file necessarily existing and it will force
+# post-processing of the file if the .d file is newer than our
+# post-processed .deps file.
+libflux/target/debug/libflux.d:
+
+libflux/target/debug/libflux.deps: libflux/target/debug/libflux.d
+	@if [ -e "$<" ]; then \
+		sed -e "s@${CURDIR}/@@g" -e "s@debug/debug@debug@g" -e "s@\\.dylib@.a@g" -e "s@\\.so@.a@g" $< > $@; \
+	fi
+# Conditionally include the libflux.deps file so if any of the
+# source files are modified, they are considered when deciding
+# whether to rebuild the library.
+-include libflux/target/debug/libflux.deps
+
+build: libflux
+	$(GO_BUILD) ./...
+
+clean:
 	rm -rf bin
+	cd libflux && $(CARGO) clean && rm -rf pkg
+	rm -f $(LIBFLUX_MEMTEST_BIN)
 
-bin/$(GOOS)/cmpgen: ./ast/asttest/cmpgen/main.go
-	$(GO_BUILD) -o $@ ./ast/asttest/cmpgen
+cleangenerate:
+	rm -rf $(GENERATED_TARGETS)
 
 fmt: $(SOURCES_NO_VENDOR)
 	go fmt ./...
+	cd libflux; $(CARGO) fmt
 
 checkfmt:
 	./etc/checkfmt.sh
@@ -60,15 +145,23 @@ checkgenerate:
 
 staticcheck:
 	GO111MODULE=on go mod vendor # staticcheck looks in vendor for dependencies.
-	GO111MODULE=on go run honnef.co/go/tools/cmd/staticcheck ./...
+	GO111MODULE=on ./gotool.sh honnef.co/go/tools/cmd/staticcheck ./...
 
-test: internal/rust
+test: test-go test-rust
+
+test-go: libflux
 	$(GO_TEST) $(GO_TEST_FLAGS) ./...
 
-test-race:
+test-rust:
+	cd libflux && $(CARGO) test $(CARGO_ARGS) && $(CARGO) clippy $(CARGO_ARGS) -- -Dclippy::all
+
+test-race: libflux
 	$(GO_TEST) -race -count=1 ./...
 
-vet:
+test-bench: libflux
+	$(GO_TEST) -run=NONE -bench=. -benchtime=1x ./...
+
+vet: libflux
 	$(GO_VET) ./...
 
 bench:
@@ -77,21 +170,39 @@ bench:
 release:
 	./release.sh
 
+libflux/scanner.c: libflux/src/flux/scanner/scanner.rl
+	ragel -C -o libflux/scanner.c libflux/src/flux/scanner/scanner.rl
 
+libflux-wasm:
+	cd libflux/src/flux && CC=clang AR=llvm-ar wasm-pack build --scope influxdata --dev
+
+test-valgrind: $(LIBFLUX_MEMTEST_BIN)
+	LD_LIBRARY_PATH=$(PWD)/libflux/target/debug $(VALGRIND) $(VALGRIND_ARGS) $^
+
+LIBFLUX_MEMTEST_SOURCES=libflux/c/*.c
+$(LIBFLUX_MEMTEST_BIN): libflux $(LIBFLUX_MEMTEST_SOURCES)
+	$(CC) -g -Wall -Werror $(LIBFLUX_MEMTEST_SOURCES) -I./libflux/include -L./libflux/target/debug -lflux -llibstd -o $@
 
 .PHONY: generate \
 	clean \
+	cleangenerate \
+	build \
+	default \
+	libflux \
+	libflux-wasm \
 	fmt \
 	checkfmt \
 	tidy \
-	checktidt \
+	checktidy \
 	checkgenerate \
 	staticcheck \
 	test \
+	test-go \
+	test-rust \
 	test-race \
+	test-bench \
+	test-valgrind \
 	vet \
 	bench \
 	checkfmt \
-	release \
-	$(SUBDIRS)
-
+	release

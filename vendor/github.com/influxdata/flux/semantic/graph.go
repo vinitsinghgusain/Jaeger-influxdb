@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/influxdata/flux/ast"
+	"github.com/influxdata/flux/semantic/types"
 )
 
 type Node interface {
@@ -41,6 +42,7 @@ func (*MemberAssignment) node()           {}
 func (*NativeVariableAssignment) node()   {}
 func (*ExternalVariableAssignment) node() {}
 
+func (*StringExpression) node()      {}
 func (*ArrayExpression) node()       {}
 func (*FunctionExpression) node()    {}
 func (*BinaryExpression) node()      {}
@@ -55,6 +57,9 @@ func (*UnaryExpression) node()       {}
 
 func (*Identifier) node() {}
 func (*Property) node()   {}
+
+func (*TextPart) node()         {}
+func (*InterpolatedPart) node() {}
 
 func (*FunctionParameters) node() {}
 func (*FunctionParameter) node()  {}
@@ -93,8 +98,10 @@ func (*NativeVariableAssignment) assignment() {}
 type Expression interface {
 	Node
 	expression()
+	TypeOf() *types.MonoType
 }
 
+func (*StringExpression) expression()       {}
 func (*ArrayExpression) expression()        {}
 func (*BinaryExpression) expression()       {}
 func (*BooleanLiteral) expression()         {}
@@ -370,6 +377,8 @@ type NativeVariableAssignment struct {
 
 	Identifier *Identifier `json:"identifier"`
 	Init       Expression  `json:"init"`
+
+	Typ *types.PolyType `json:"polytype,omitempty"`
 }
 
 func (*NativeVariableAssignment) NodeType() string { return "NativeVariableAssignment" }
@@ -490,10 +499,88 @@ func (e *ExternBlock) Copy() Node {
 	return ne
 }
 
+type StringExpression struct {
+	loc `json:"-"`
+
+	Parts []StringExpressionPart `json:"parts"`
+
+	typ *types.MonoType
+}
+
+func (*StringExpression) NodeType() string {
+	return "StringExpression"
+}
+func (e *StringExpression) Copy() Node {
+	if e == nil {
+		return e
+	}
+	ne := new(StringExpression)
+	*ne = *e
+
+	parts := make([]StringExpressionPart, len(e.Parts))
+	for i, p := range e.Parts {
+		parts[i] = p.Copy().(StringExpressionPart)
+	}
+	ne.Parts = parts
+	return ne
+}
+func (e *StringExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
+
+type StringExpressionPart interface {
+	Node
+
+	stringPart()
+}
+
+func (*TextPart) stringPart()         {}
+func (*InterpolatedPart) stringPart() {}
+
+type TextPart struct {
+	loc   `json:"-"`
+	Value string `json:"value"`
+}
+
+func (*TextPart) NodeType() string {
+	return "TextPart"
+}
+func (p *TextPart) Copy() Node {
+	if p == nil {
+		return p
+	}
+	np := new(TextPart)
+	*np = *p
+	return np
+}
+
+type InterpolatedPart struct {
+	loc        `json:"-"`
+	Expression Expression `json:"expression"`
+}
+
+func (*InterpolatedPart) NodeType() string {
+	return "InterpolatedPart"
+}
+func (p *InterpolatedPart) Copy() Node {
+	if p == nil {
+		return p
+	}
+	np := new(InterpolatedPart)
+	*np = *p
+
+	if p.Expression != nil {
+		np.Expression = p.Expression.Copy().(Expression)
+	}
+	return np
+}
+
 type ArrayExpression struct {
 	loc `json:"-"`
 
 	Elements []Expression `json:"elements"`
+
+	typ *types.MonoType
 }
 
 func (*ArrayExpression) NodeType() string { return "ArrayExpression" }
@@ -514,6 +601,9 @@ func (e *ArrayExpression) Copy() Node {
 
 	return ne
 }
+func (e *ArrayExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 // FunctionExpression represents the definition of a function
 type FunctionExpression struct {
@@ -521,6 +611,8 @@ type FunctionExpression struct {
 
 	Defaults *ObjectExpression `json:"defaults,omitempty"`
 	Block    *FunctionBlock    `json:"block"`
+
+	typ *types.MonoType
 }
 
 func (*FunctionExpression) NodeType() string { return "FunctionExpression" }
@@ -538,6 +630,9 @@ func (e *FunctionExpression) Copy() Node {
 	ne.Block = e.Block.Copy().(*FunctionBlock)
 
 	return ne
+}
+func (e *FunctionExpression) TypeOf() *types.MonoType {
+	return e.typ
 }
 
 // FunctionBlock represents the function parameters and the function body.
@@ -618,6 +713,8 @@ type BinaryExpression struct {
 	Operator ast.OperatorKind `json:"operator"`
 	Left     Expression       `json:"left"`
 	Right    Expression       `json:"right"`
+
+	typ *types.MonoType
 }
 
 func (*BinaryExpression) NodeType() string { return "BinaryExpression" }
@@ -634,6 +731,9 @@ func (e *BinaryExpression) Copy() Node {
 
 	return ne
 }
+func (e *BinaryExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type CallExpression struct {
 	loc `json:"-"`
@@ -641,6 +741,8 @@ type CallExpression struct {
 	Callee    Expression        `json:"callee"`
 	Arguments *ObjectExpression `json:"arguments"`
 	Pipe      Expression        `json:"pipe,omitempty"`
+
+	typ *types.MonoType
 }
 
 func (*CallExpression) NodeType() string { return "CallExpression" }
@@ -660,6 +762,9 @@ func (e *CallExpression) Copy() Node {
 
 	return ne
 }
+func (e *CallExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type ConditionalExpression struct {
 	loc `json:"-"`
@@ -667,6 +772,8 @@ type ConditionalExpression struct {
 	Test       Expression `json:"test"`
 	Alternate  Expression `json:"alternate"`
 	Consequent Expression `json:"consequent"`
+
+	typ *types.MonoType
 }
 
 func (*ConditionalExpression) NodeType() string { return "ConditionalExpression" }
@@ -684,6 +791,9 @@ func (e *ConditionalExpression) Copy() Node {
 
 	return ne
 }
+func (e *ConditionalExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type LogicalExpression struct {
 	loc `json:"-"`
@@ -691,6 +801,8 @@ type LogicalExpression struct {
 	Operator ast.LogicalOperatorKind `json:"operator"`
 	Left     Expression              `json:"left"`
 	Right    Expression              `json:"right"`
+
+	typ *types.MonoType
 }
 
 func (*LogicalExpression) NodeType() string { return "LogicalExpression" }
@@ -707,12 +819,17 @@ func (e *LogicalExpression) Copy() Node {
 
 	return ne
 }
+func (e *LogicalExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type MemberExpression struct {
 	loc `json:"-"`
 
 	Object   Expression `json:"object"`
 	Property string     `json:"property"`
+
+	typ *types.MonoType
 }
 
 func (*MemberExpression) NodeType() string { return "MemberExpression" }
@@ -728,12 +845,17 @@ func (e *MemberExpression) Copy() Node {
 
 	return ne
 }
+func (e *MemberExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type IndexExpression struct {
 	loc `json:"-"`
 
 	Array Expression `json:"array"`
 	Index Expression `json:"index"`
+
+	typ *types.MonoType
 }
 
 func (*IndexExpression) NodeType() string { return "IndexExpression" }
@@ -748,12 +870,17 @@ func (e *IndexExpression) Copy() Node {
 	ne.Index = e.Index.Copy().(Expression)
 	return ne
 }
+func (e *IndexExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type ObjectExpression struct {
 	loc `json:"-"`
 
 	With       *IdentifierExpression `json:"with,omitempty"`
 	Properties []*Property           `json:"properties"`
+
+	typ *types.MonoType
 }
 
 func (*ObjectExpression) NodeType() string { return "ObjectExpression" }
@@ -776,12 +903,17 @@ func (e *ObjectExpression) Copy() Node {
 
 	return ne
 }
+func (e *ObjectExpression) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type UnaryExpression struct {
 	loc `json:"-"`
 
 	Operator ast.OperatorKind `json:"operator"`
 	Argument Expression       `json:"argument"`
+
+	typ *types.MonoType
 }
 
 func (*UnaryExpression) NodeType() string { return "UnaryExpression" }
@@ -796,6 +928,9 @@ func (e *UnaryExpression) Copy() Node {
 	ne.Argument = e.Argument.Copy().(Expression)
 
 	return ne
+}
+func (e *UnaryExpression) TypeOf() *types.MonoType {
+	return e.typ
 }
 
 type Property struct {
@@ -823,6 +958,8 @@ type IdentifierExpression struct {
 	loc `json:"-"`
 
 	Name string `json:"name"`
+
+	typ *types.MonoType
 }
 
 func (*IdentifierExpression) NodeType() string { return "IdentifierExpression" }
@@ -835,6 +972,9 @@ func (e *IdentifierExpression) Copy() Node {
 	*ne = *e
 
 	return ne
+}
+func (e *IdentifierExpression) TypeOf() *types.MonoType {
+	return e.typ
 }
 
 type Identifier struct {
@@ -859,6 +999,8 @@ type BooleanLiteral struct {
 	loc `json:"-"`
 
 	Value bool `json:"value"`
+
+	typ *types.MonoType
 }
 
 func (*BooleanLiteral) NodeType() string { return "BooleanLiteral" }
@@ -872,11 +1014,16 @@ func (l *BooleanLiteral) Copy() Node {
 
 	return nl
 }
+func (e *BooleanLiteral) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type DateTimeLiteral struct {
 	loc `json:"-"`
 
 	Value time.Time `json:"value"`
+
+	typ *types.MonoType
 }
 
 func (*DateTimeLiteral) NodeType() string { return "DateTimeLiteral" }
@@ -890,11 +1037,16 @@ func (l *DateTimeLiteral) Copy() Node {
 
 	return nl
 }
+func (e *DateTimeLiteral) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type DurationLiteral struct {
 	loc `json:"-"`
 
-	Value time.Duration `json:"value"`
+	Values []ast.Duration `json:"values"`
+
+	typ *types.MonoType
 }
 
 func (*DurationLiteral) NodeType() string { return "DurationLiteral" }
@@ -908,11 +1060,16 @@ func (l *DurationLiteral) Copy() Node {
 
 	return nl
 }
+func (e *DurationLiteral) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type IntegerLiteral struct {
 	loc `json:"-"`
 
 	Value int64 `json:"value"`
+
+	typ *types.MonoType
 }
 
 func (*IntegerLiteral) NodeType() string { return "IntegerLiteral" }
@@ -926,11 +1083,16 @@ func (l *IntegerLiteral) Copy() Node {
 
 	return nl
 }
+func (e *IntegerLiteral) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type FloatLiteral struct {
 	loc `json:"-"`
 
 	Value float64 `json:"value"`
+
+	typ *types.MonoType
 }
 
 func (*FloatLiteral) NodeType() string { return "FloatLiteral" }
@@ -944,11 +1106,16 @@ func (l *FloatLiteral) Copy() Node {
 
 	return nl
 }
+func (e *FloatLiteral) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type RegexpLiteral struct {
 	loc `json:"-"`
 
 	Value *regexp.Regexp `json:"value"`
+
+	typ *types.MonoType
 }
 
 func (*RegexpLiteral) NodeType() string { return "RegexpLiteral" }
@@ -964,11 +1131,16 @@ func (l *RegexpLiteral) Copy() Node {
 
 	return nl
 }
+func (e *RegexpLiteral) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type StringLiteral struct {
 	loc `json:"-"`
 
 	Value string `json:"value"`
+
+	typ *types.MonoType
 }
 
 func (*StringLiteral) NodeType() string { return "StringLiteral" }
@@ -982,11 +1154,16 @@ func (l *StringLiteral) Copy() Node {
 
 	return nl
 }
+func (e *StringLiteral) TypeOf() *types.MonoType {
+	return e.typ
+}
 
 type UnsignedIntegerLiteral struct {
 	loc `json:"-"`
 
 	Value uint64 `json:"value"`
+
+	typ *types.MonoType
 }
 
 func (*UnsignedIntegerLiteral) NodeType() string { return "UnsignedIntegerLiteral" }
@@ -999,4 +1176,7 @@ func (l *UnsignedIntegerLiteral) Copy() Node {
 	*nl = *l
 
 	return nl
+}
+func (e *UnsignedIntegerLiteral) TypeOf() *types.MonoType {
+	return e.typ
 }

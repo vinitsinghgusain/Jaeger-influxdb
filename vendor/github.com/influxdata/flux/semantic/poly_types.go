@@ -5,7 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pkg/errors"
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 )
 
 // TypeExpression represents an expression describing a type.
@@ -76,10 +77,17 @@ func (a Tvar) substituteType(b Tvar, t PolyType) PolyType {
 func (tv Tvar) freeVars(c *Constraints) TvarSet {
 	fvs := TvarSet{tv}
 	if c != nil {
-		ks, ok := c.kindConst[tv]
-		if ok {
-			for _, k := range ks {
-				fvs = fvs.union(k.freeVars(c))
+		for tvar, kinds := range c.kindConst {
+			if tvar == tv {
+				for _, k := range kinds {
+					fvs = fvs.union(k.freeVars(c))
+				}
+				continue
+			}
+			for _, k := range kinds {
+				if k.freeVars(nil).contains(tv) {
+					fvs = fvs.union(TvarSet{tvar})
+				}
 			}
 		}
 	}
@@ -107,7 +115,7 @@ func (l Tvar) unifyType(kinds map[Tvar]Kind, r PolyType) (Substitution, error) {
 func (tv Tvar) resolveType(kinds map[Tvar]Kind) (Type, error) {
 	k, ok := kinds[tv]
 	if !ok {
-		return nil, fmt.Errorf("type variable %q is not monomorphic", tv)
+		return nil, errors.Newf(codes.Invalid, "type variable %q is not monomorphic", tv)
 	}
 	return k.resolveType(kinds)
 }
@@ -141,12 +149,12 @@ func (n Nature) unifyType(kinds map[Tvar]Kind, t PolyType) (Substitution, error)
 	switch t := t.(type) {
 	case Nature:
 		if t != n {
-			return nil, fmt.Errorf("%v != %v", n, t)
+			return nil, errors.Newf(codes.Invalid, "%v != %v", n, t)
 		}
 	case Tvar:
 		return t.unifyType(kinds, n)
 	default:
-		return nil, fmt.Errorf("cannot unify %v with %T", n, t)
+		return nil, errors.Newf(codes.Invalid, "cannot unify %v with %T", n, t)
 	}
 	return nil, nil
 }
@@ -215,7 +223,7 @@ func (a array) unifyType(kinds map[Tvar]Kind, b PolyType) (Substitution, error) 
 	case Tvar:
 		return b.unifyType(kinds, a)
 	default:
-		return nil, fmt.Errorf("cannot unify list with %T", b)
+		return nil, errors.Newf(codes.Invalid, "cannot unify list with %T", b)
 	}
 }
 func (a array) resolveType(kinds map[Tvar]Kind) (Type, error) {
@@ -244,55 +252,6 @@ func (a array) Equal(t PolyType) bool {
 		return a.typ.Equal(arr.typ)
 	}
 	return false
-}
-
-type ArrayKind struct {
-	elementType PolyType
-}
-
-func (k ArrayKind) String() string {
-	return fmt.Sprintf("ArrayKind: [%v]", k.elementType)
-}
-func (k ArrayKind) substituteKind(tv Tvar, t PolyType) Kind {
-	return ArrayKind{elementType: k.elementType.substituteType(tv, t)}
-}
-func (k ArrayKind) freeVars(c *Constraints) TvarSet {
-	return k.elementType.freeVars(c)
-}
-func (k ArrayKind) unifyKind(kinds map[Tvar]Kind, r Kind) (Kind, Substitution, error) {
-	if r, ok := r.(ArrayKind); ok {
-		sub, err := unifyTypes(kinds, k.elementType, r.elementType)
-		if err != nil {
-			return nil, nil, err
-		}
-		return k, sub, nil
-	}
-	return nil, nil, fmt.Errorf("cannot unify array with %T", k)
-}
-
-func (k ArrayKind) resolveType(kinds map[Tvar]Kind) (Type, error) {
-	typ, err := k.elementType.resolveType(kinds)
-	if err != nil {
-		return nil, err
-	}
-	return NewArrayType(typ), nil
-}
-func (k ArrayKind) MonoType() (Type, bool) {
-	m, ok := k.elementType.MonoType()
-	if !ok {
-		return nil, false
-	}
-	return NewArrayType(m), true
-}
-func (k ArrayKind) resolvePolyType(kinds map[Tvar]Kind) (PolyType, error) {
-	typ, err := k.elementType.resolvePolyType(kinds)
-	if err != nil {
-		return nil, err
-	}
-	return NewArrayPolyType(typ), nil
-}
-func (k ArrayKind) occurs(tv Tvar) bool {
-	return k.elementType.occurs(tv)
 }
 
 // pipeLabel is a hidden label on which all pipe arguments are passed according to type inference.
@@ -398,7 +357,7 @@ func (l function) unifyType(kinds map[Tvar]Kind, r PolyType) (Substitution, erro
 		for _, param := range r.required {
 			if _, ok := l.parameters[param]; !ok && param != r.pipeArgument {
 				// Pipe paramenters are validated below
-				return nil, fmt.Errorf("function does not take a parameter %q", param)
+				return nil, errors.Newf(codes.Invalid, "function does not take a parameter %q, required params %v", param, l.required)
 			}
 		}
 		// Validate that every required parameter of the left function
@@ -412,7 +371,7 @@ func (l function) unifyType(kinds map[Tvar]Kind, r PolyType) (Substitution, erro
 			}
 		}
 		if len(lst) > 0 {
-			return nil, fmt.Errorf("missing required parameter(s) %q in call to function, which requires %q",
+			return nil, errors.Newf(codes.Invalid, "missing required parameter(s) %q in call to function, which requires %q",
 				strings.Join(lst, ", "), l.required)
 		}
 
@@ -436,7 +395,7 @@ func (l function) unifyType(kinds map[Tvar]Kind, r PolyType) (Substitution, erro
 			// If the left function does not take a pipe argument,
 			// the right function must not take one either.
 			if _, ok := r.lookupPipe(r.pipeArgument); ok {
-				return nil, fmt.Errorf("function does not take a pipe argument")
+				return nil, errors.New(codes.Invalid, "function does not take a pipe argument")
 			}
 		} else {
 			var pipeArgument string
@@ -449,7 +408,7 @@ func (l function) unifyType(kinds map[Tvar]Kind, r PolyType) (Substitution, erro
 			// the right must as well, and the types must unify.
 			rightPipeType, ok := r.lookupPipe(pipeArgument)
 			if !ok {
-				return nil, fmt.Errorf("function requires a pipe argument")
+				return nil, errors.New(codes.Invalid, "function requires a pipe argument")
 			}
 			s, err := unifyTypes(kinds, leftPipeType, rightPipeType)
 			if err != nil {
@@ -466,7 +425,7 @@ func (l function) unifyType(kinds map[Tvar]Kind, r PolyType) (Substitution, erro
 	case Tvar:
 		return r.unifyType(kinds, l)
 	default:
-		return nil, fmt.Errorf("cannot unify function with %T", r)
+		return nil, errors.Newf(codes.Invalid, "cannot unify function with %T", r)
 	}
 }
 
@@ -643,7 +602,7 @@ func (l object) unifyType(kinds map[Tvar]Kind, r PolyType) (Substitution, error)
 	case Tvar:
 		return r.unifyType(kinds, l)
 	default:
-		return nil, fmt.Errorf("cannot unify object with %T", r)
+		return nil, errors.Newf(codes.Invalid, "cannot unify object with %T", r)
 	}
 }
 func (o object) resolveType(kinds map[Tvar]Kind) (Type, error) {
@@ -694,13 +653,13 @@ func (l KClass) unifyKind(kinds map[Tvar]Kind, r Kind) (Kind, Substitution, erro
 	return nil, nil, nil
 }
 func (k KClass) resolveType(map[Tvar]Kind) (Type, error) {
-	return nil, errors.New("KClass has no type")
+	return nil, errors.New(codes.Internal, "KClass has no type")
 }
 func (k KClass) MonoType() (Type, bool) {
 	return nil, false
 }
 func (k KClass) resolvePolyType(map[Tvar]Kind) (PolyType, error) {
-	return nil, errors.New("KClass has no poly type")
+	return nil, errors.New(codes.Internal, "KClass has no poly type")
 }
 func (k KClass) occurs(Tvar) bool { return false }
 
@@ -754,7 +713,7 @@ func (k ObjectKind) freeVars(c *Constraints) TvarSet {
 func (l ObjectKind) unifyKind(kinds map[Tvar]Kind, k Kind) (Kind, Substitution, error) {
 	r, ok := k.(ObjectKind)
 	if !ok {
-		return nil, nil, fmt.Errorf("cannot unify record with %T", k)
+		return nil, nil, errors.Newf(codes.Invalid, "cannot unify record with %T", k)
 	}
 
 	// Merge properties building up a substitution
@@ -796,7 +755,7 @@ func (l ObjectKind) unifyKind(kinds map[Tvar]Kind, k Kind) (Kind, Substitution, 
 				continue
 			}
 		}
-		return nil, nil, fmt.Errorf("missing object properties %v", diff)
+		return nil, nil, errors.Newf(codes.Invalid, "missing object properties %v", diff)
 	}
 
 	var with *Tvar
@@ -810,7 +769,7 @@ func (l ObjectKind) unifyKind(kinds map[Tvar]Kind, k Kind) (Kind, Substitution, 
 		with = new(Tvar)
 		*with = *l.with
 	case l.with != nil && r.with != nil:
-		return nil, nil, errors.New("cannot unify two object each having a with constraint")
+		return nil, nil, errors.New(codes.Invalid, "cannot unify two object each having a with constraint")
 	}
 
 	kr := ObjectKind{
@@ -823,7 +782,7 @@ func (l ObjectKind) unifyKind(kinds map[Tvar]Kind, k Kind) (Kind, Substitution, 
 	for lbl, t := range kr.properties {
 		i, ok := t.(invalid)
 		if ok {
-			return nil, nil, errors.Wrapf(i.err, "invalid record access %q", lbl)
+			return nil, nil, errors.Wrapf(i.err, codes.Inherit, "invalid record access %q", lbl)
 		}
 	}
 	return kr, subst, nil
@@ -897,6 +856,10 @@ func (n NullableKind) resolveType(kinds map[Tvar]Kind) (Type, error) {
 	return Nil, nil
 }
 func (n NullableKind) resolvePolyType(kinds map[Tvar]Kind) (PolyType, error) {
+	// A nullable type variable resolves to a NullableTvar
+	if tv, ok := n.T.(Tvar); ok {
+		return NullableTvar{tv}, nil
+	}
 	return n.T, nil
 }
 func (n NullableKind) substituteKind(tv Tvar, t PolyType) Kind {
@@ -911,6 +874,35 @@ func (n NullableKind) unifyKind(kinds map[Tvar]Kind, k Kind) (Kind, Substitution
 }
 func (n NullableKind) occurs(tv Tvar) bool {
 	return n.T.occurs(tv)
+}
+
+// NullableTvar is a type variable that might be null.
+// If a type variable is constrained to be nullable (via the NullableKind),
+// in order to preserve that constraint when resolving the type, we return
+// a NullableTvar.
+//
+// TODO: This is a temporary type that will be removed once kind constraints
+// can be expressed in the language of types. Unfortunately right now, external
+// packages like the compiler don't have any notion of kind constraints.
+type NullableTvar struct {
+	Tvar
+}
+
+func (NullableTvar) Nature() Nature {
+	return Nil
+}
+
+func (NullableTvar) MonoType() (Type, bool) {
+	return Nil, true
+}
+
+func (t NullableTvar) Equal(p PolyType) bool {
+	tv, ok := p.(NullableTvar)
+	return ok && t.Tvar.Equal(tv.Tvar)
+}
+
+func (t NullableTvar) String() string {
+	return fmt.Sprintf("nullable{%v}", t.Tvar)
 }
 
 type Comparable struct{}

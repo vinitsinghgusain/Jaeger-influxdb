@@ -1,97 +1,15 @@
-// Package spec provides functions for building a flux.Spec from different sources (e.g., string, AST).
-// It is intended for internal use only.
 package spec
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/influxdata/flux"
-	"github.com/influxdata/flux/ast"
 	"github.com/influxdata/flux/interpreter"
-	"github.com/influxdata/flux/semantic"
 	"github.com/influxdata/flux/values"
 	"github.com/opentracing/opentracing-go"
 )
-
-const nowOption = "now"
-
-// FromScript returns a spec from a script expressed as a raw string.
-func FromScript(ctx context.Context, script string, now time.Time) (*flux.Spec, error) {
-	s, _ := opentracing.StartSpanFromContext(ctx, "parse")
-
-	astPkg, err := flux.Parse(script)
-	if err != nil {
-		return nil, err
-	}
-	s.Finish()
-	return FromAST(ctx, astPkg, now)
-}
-
-// FromAST returns a spec from an AST.
-func FromAST(ctx context.Context, astPkg *ast.Package, now time.Time) (*flux.Spec, error) {
-	s, _ := opentracing.StartSpanFromContext(ctx, "eval")
-
-	sideEffects, scope, err := flux.EvalAST(astPkg, flux.SetOption(nowOption, generateNowFunc(now)))
-	if err != nil {
-		return nil, err
-	}
-
-	s.Finish()
-	s, _ = opentracing.StartSpanFromContext(ctx, "compile")
-	defer s.Finish()
-
-	nowOpt, ok := scope.Lookup(nowOption)
-	if !ok {
-		return nil, fmt.Errorf("%q option not set", nowOption)
-	}
-
-	nowTime, err := nowOpt.Function().Call(nil)
-	if err != nil {
-		return nil, err
-	}
-
-	spec, err := toSpec(sideEffects, nowTime.Time().Time())
-	if err != nil {
-		return nil, err
-	}
-
-	if len(spec.Operations) == 0 {
-		return nil,
-			errors.New("this Flux script returns no streaming data. " +
-				"Consider adding a \"yield\" or invoking streaming functions directly, without performing an assignment")
-	}
-
-	return spec, nil
-}
-
-// FromAST returns a spec from a TableObject.
-func FromTableObject(to *flux.TableObject, now time.Time) *flux.Spec {
-	ider := &ider{
-		id:     0,
-		lookup: make(map[*flux.TableObject]flux.OperationID),
-	}
-	spec := &flux.Spec{
-		Now: now,
-	}
-	visited := make(map[*flux.TableObject]bool)
-	buildSpec(to, ider, spec, visited)
-	return spec
-}
-
-func generateNowFunc(now time.Time) values.Function {
-	timeVal := values.NewTime(values.ConvertTime(now))
-	ftype := semantic.NewFunctionPolyType(semantic.FunctionPolySignature{
-		Return: semantic.Time,
-	})
-	call := func(args values.Object) (values.Value, error) {
-		return timeVal, nil
-	}
-	sideEffect := false
-	return values.NewFunction(nowOption, ftype, call, sideEffect)
-}
 
 type ider struct {
 	id     int
@@ -123,7 +41,7 @@ func (i *ider) ID(t *flux.TableObject) flux.OperationID {
 	return tableID
 }
 
-func toSpec(functionCalls []interpreter.SideEffect, now time.Time) (*flux.Spec, error) {
+func FromEvaluation(ctx context.Context, ses []interpreter.SideEffect, now time.Time) (*flux.Spec, error) {
 	ider := &ider{
 		id:     0,
 		lookup: make(map[*flux.TableObject]flux.OperationID),
@@ -131,25 +49,50 @@ func toSpec(functionCalls []interpreter.SideEffect, now time.Time) (*flux.Spec, 
 
 	spec := &flux.Spec{Now: now}
 	seen := make(map[*flux.TableObject]bool)
-	objs := make([]*flux.TableObject, 0, len(functionCalls))
+	objs := make([]*flux.TableObject, 0, len(ses))
 
-	for _, call := range functionCalls {
-		if op, ok := call.Value.(*flux.TableObject); ok {
-			dup := false
-			for _, tableObject := range objs {
-				if op.Equal(tableObject) {
-					dup = true
-					break
-				}
+	for _, se := range ses {
+		if op, ok := se.Value.(*flux.TableObject); ok {
+			s, cctx := opentracing.StartSpanFromContext(ctx, "toSpec")
+			s.SetTag("opKind", op.Kind)
+			if se.Node != nil {
+				s.SetTag("loc", se.Node.Location().String())
 			}
-			if !dup {
-				buildSpec(op, ider, spec, seen)
+
+			if !isDuplicateTableObject(cctx, op, objs) {
+				buildSpecWithTrace(cctx, op, ider, spec, seen)
 				objs = append(objs, op)
 			}
+			s.Finish()
 		}
 	}
 
+	if len(spec.Operations) == 0 {
+		return nil,
+			fmt.Errorf("this Flux script returns no streaming data. " +
+				"Consider adding a \"yield\" or invoking streaming functions directly, without performing an assignment")
+	}
+
 	return spec, nil
+}
+
+func isDuplicateTableObject(ctx context.Context, op *flux.TableObject, objs []*flux.TableObject) bool {
+	s, _ := opentracing.StartSpanFromContext(ctx, "isDuplicate")
+	defer s.Finish()
+
+	for _, tableObject := range objs {
+		if op == tableObject {
+			return true
+		}
+	}
+	return false
+}
+
+func buildSpecWithTrace(ctx context.Context, t *flux.TableObject, ider flux.IDer, spec *flux.Spec, visited map[*flux.TableObject]bool) {
+	s, _ := opentracing.StartSpanFromContext(ctx, "buildSpec")
+	s.SetTag("opKind", t.Kind)
+	buildSpec(t, ider, spec, visited)
+	s.Finish()
 }
 
 func buildSpec(t *flux.TableObject, ider flux.IDer, spec *flux.Spec, visited map[*flux.TableObject]bool) {
@@ -158,7 +101,7 @@ func buildSpec(t *flux.TableObject, ider flux.IDer, spec *flux.Spec, visited map
 	t.Parents.Range(func(i int, v values.Value) {
 		p := v.(*flux.TableObject)
 		if !visited[p] {
-			// rescurse up parents
+			// recurse up parents
 			buildSpec(p, ider, spec, visited)
 		}
 	})
@@ -177,4 +120,41 @@ func buildSpec(t *flux.TableObject, ider flux.IDer, spec *flux.Spec, visited map
 
 	visited[t] = true
 	spec.Operations = append(spec.Operations, t.Operation(ider))
+}
+
+// FromTableObject returns a spec from a TableObject.
+func FromTableObject(ctx context.Context, to *flux.TableObject, now time.Time) (*flux.Spec, error) {
+	return FromEvaluation(ctx, []interpreter.SideEffect{{Value: to}}, now)
+}
+
+// FromScript returns a spec from a script expressed as a raw string.
+// This is duplicate logic for what happens when a flux.Program runs.
+// This function is used in tests that compare flux.Specs (e.g. in planner tests).
+func FromScript(ctx context.Context, now time.Time, script string) (*flux.Spec, error) {
+	s, _ := opentracing.StartSpanFromContext(ctx, "parse")
+	astPkg, err := flux.Parse(script)
+	if err != nil {
+		return nil, err
+	}
+	s.Finish()
+
+	s, cctx := opentracing.StartSpanFromContext(ctx, "eval")
+	sideEffects, scope, err := flux.EvalAST(cctx, astPkg, flux.SetNowOption(now))
+	if err != nil {
+		return nil, err
+	}
+	s.Finish()
+
+	s, cctx = opentracing.StartSpanFromContext(ctx, "compile")
+	defer s.Finish()
+	nowOpt, ok := scope.Lookup(flux.NowOption)
+	if !ok {
+		return nil, fmt.Errorf("%q option not set", flux.NowOption)
+	}
+	nowTime, err := nowOpt.Function().Call(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return FromEvaluation(cctx, sideEffects, nowTime.Time().Time())
 }

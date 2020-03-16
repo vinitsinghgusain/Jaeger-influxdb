@@ -18,16 +18,31 @@ import (
 	"github.com/influxdata/influxdb/pkg/escape"
 )
 
-// Values used to store the field key and measurement name as special internal tags.
 const (
+	// Values used to store the field key and measurement name as special internal tags.
 	FieldKeyTagKey    = "\xff"
 	MeasurementTagKey = "\x00"
+
+	// reserved tag keys which when present cause the point to be discarded
+	// and an error returned
+	reservedFieldTagKey       = "_field"
+	reservedMeasurementTagKey = "_measurement"
+	reservedTimeTagKey        = "time"
 )
 
-// Predefined byte representations of special tag keys.
 var (
+	// Predefined byte representations of special tag keys.
 	FieldKeyTagKeyBytes    = []byte(FieldKeyTagKey)
 	MeasurementTagKeyBytes = []byte(MeasurementTagKey)
+
+	// set of reserved tag keys which cannot be present when a point is being parsed.
+	reservedTagKeys = [][]byte{
+		FieldKeyTagKeyBytes,
+		MeasurementTagKeyBytes,
+		[]byte(reservedFieldTagKey),
+		[]byte(reservedMeasurementTagKey),
+		[]byte(reservedTimeTagKey),
+	}
 )
 
 type escapeSet struct {
@@ -55,22 +70,16 @@ var (
 
 	// ErrInvalidPoint is returned when a point cannot be parsed correctly.
 	ErrInvalidPoint = errors.New("point is invalid")
+
+	// ErrInvalidKevValuePairs is returned when the number of key, value pairs
+	// is odd, indicating a missing value.
+	ErrInvalidKevValuePairs = errors.New("key/value pairs is an odd length")
 )
 
 const (
 	// MaxKeyLength is the largest allowed size of the combined measurement and tag keys.
 	MaxKeyLength = 65535
 )
-
-// enableUint64Support will enable uint64 support if set to true.
-var enableUint64Support = false
-
-// EnableUintSupport manually enables uint support for the point parser.
-// This function will be removed in the future and only exists for unit tests during the
-// transition.
-func EnableUintSupport() {
-	enableUint64Support = true
-}
 
 // Point defines the values that will be written to the database.
 type Point interface {
@@ -186,6 +195,8 @@ func (t FieldType) String() string {
 		return "String"
 	case Empty:
 		return "Empty"
+	case Unsigned:
+		return "Unsigned"
 	default:
 		return "<unknown>"
 	}
@@ -225,13 +236,32 @@ type FieldIterator interface {
 type Points []Point
 
 // Len implements sort.Interface.
-func (a Points) Len() int { return len(a) }
+func (p Points) Len() int { return len(p) }
 
 // Less implements sort.Interface.
-func (a Points) Less(i, j int) bool { return a[i].Time().Before(a[j].Time()) }
+func (p Points) Less(i, j int) bool { return p[i].Time().Before(p[j].Time()) }
 
 // Swap implements sort.Interface.
-func (a Points) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (p Points) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
+
+func (p Points) String() string {
+	const sep = "\n"
+	switch len(p) {
+	case 0:
+		return ""
+	case 1:
+		return p[0].String()
+	}
+	var b strings.Builder
+	b.WriteString(p[0].String())
+
+	for _, s := range p[1:] {
+		b.WriteString(sep)
+		b.WriteString(s.String())
+	}
+
+	return b.String()
+}
 
 // point is the default implementation of Point.
 type point struct {
@@ -244,9 +274,6 @@ type point struct {
 
 	// text encoding of field data
 	fields []byte
-
-	// text encoding of timestamp
-	ts []byte
 
 	// cached version of parsed fields from data
 	cachedFields map[string]interface{}
@@ -362,10 +389,10 @@ func ValidPrecision(precision string) bool {
 	}
 }
 
-// ParsePointsWithPrecisionV1 is similar to ParsePointsWithPrecision but does
-// not rewrite the measurement & field keys.
-func ParsePointsWithPrecisionV1(buf []byte, mm []byte, defaultTime time.Time, precision string) (_ []Point, err error) {
-	return parsePointsWithPrecision(buf, mm, defaultTime, precision, false)
+func ParsePointsWithOptions(buf []byte, mm []byte, opts ...ParserOption) (_ []Point, err error) {
+	pp := newPointsParser(mm, opts...)
+	err = pp.parsePoints(buf)
+	return pp.points, err
 }
 
 // ParsePointsWithPrecision is similar to ParsePoints, but allows the
@@ -374,168 +401,9 @@ func ParsePointsWithPrecisionV1(buf []byte, mm []byte, defaultTime time.Time, pr
 // NOTE: to minimize heap allocations, the returned Points will refer to subslices of buf.
 // This can have the unintended effect preventing buf from being garbage collected.
 func ParsePointsWithPrecision(buf []byte, mm []byte, defaultTime time.Time, precision string) (_ []Point, err error) {
-	return parsePointsWithPrecision(buf, mm, defaultTime, precision, true)
-}
-
-func parsePointsWithPrecision(buf []byte, mm []byte, defaultTime time.Time, precision string, rewrite bool) (_ []Point, err error) {
-	points := make([]Point, 0, bytes.Count(buf, []byte{'\n'})+1)
-	var (
-		pos    int
-		block  []byte
-		failed []string
-	)
-	for pos < len(buf) {
-		pos, block = scanLine(buf, pos)
-		pos++
-
-		if len(block) == 0 {
-			continue
-		}
-
-		// lines which start with '#' are comments
-		start := skipWhitespace(block, 0)
-
-		// If line is all whitespace, just skip it
-		if start >= len(block) {
-			continue
-		}
-
-		if block[start] == '#' {
-			continue
-		}
-
-		// strip the newline if one is present
-		if block[len(block)-1] == '\n' {
-			block = block[:len(block)-1]
-		}
-
-		points, err = parsePointsAppend(points, block[start:], mm, defaultTime, precision, rewrite)
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("unable to parse '%s': %v", string(block[start:]), err))
-		}
-	}
-	if len(failed) > 0 {
-		return points, fmt.Errorf("%s", strings.Join(failed, "\n"))
-	}
-
-	return points, nil
-}
-
-func parsePointsAppend(points []Point, buf []byte, mm []byte, defaultTime time.Time, precision string, rewrite bool) ([]Point, error) {
-	// scan the first block which is measurement[,tag1=value1,tag2=value=2...]
-	pos, key, err := scanKey(buf, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	// measurement name is required
-	if len(key) == 0 {
-		return points, fmt.Errorf("missing measurement")
-	}
-
-	if len(key) > MaxKeyLength {
-		return points, fmt.Errorf("max key length exceeded: %v > %v", len(key), MaxKeyLength)
-	}
-
-	// Since the measurement is converted to a tag and measurements & tags have
-	// different escaping rules, we need to check if the measurement needs escaping.
-	_, i, _ := scanMeasurement(key, 0)
-	keyMeasurement := key[:i-1]
-	if rewrite && bytes.IndexByte(keyMeasurement, '=') != -1 {
-		escapedKeyMeasurement := bytes.Replace(keyMeasurement, []byte("="), []byte(`\=`), -1)
-
-		newKey := make([]byte, len(escapedKeyMeasurement)+(len(key)-len(keyMeasurement)))
-		copy(newKey, escapedKeyMeasurement)
-		copy(newKey[len(escapedKeyMeasurement):], key[len(keyMeasurement):])
-		key = newKey
-	}
-
-	// scan the second block is which is field1=value1[,field2=value2,...]
-	// at least one field is required
-	pos, fields, err := scanFields(buf, pos)
-	if err != nil {
-		return points, err
-	} else if len(fields) == 0 {
-		return points, fmt.Errorf("missing fields")
-	}
-
-	// scan the last block which is an optional integer timestamp
-	pos, ts, err := scanTime(buf, pos)
-	if err != nil {
-		return points, err
-	}
-
-	// Build point with timestamp only.
-	pt := point{ts: ts}
-
-	if len(ts) == 0 {
-		pt.time = defaultTime
-		pt.SetPrecision(precision)
-	} else {
-		ts, err := parseIntBytes(ts, 10, 64)
-		if err != nil {
-			return points, err
-		}
-		pt.time, err = SafeCalcTime(ts, precision)
-		if err != nil {
-			return points, err
-		}
-
-		// Determine if there are illegal non-whitespace characters after the
-		// timestamp block.
-		for pos < len(buf) {
-			if buf[pos] != ' ' {
-				return points, ErrInvalidPoint
-			}
-			pos++
-		}
-	}
-
-	// Loop over fields and split points while validating field.
-	var maxKeyErr error
-	if err := walkFields(fields, func(k, v, fieldBuf []byte) bool {
-		newKey := key
-
-		// Build new key with measurement & field as keys.
-		if rewrite {
-			newKey = newV2Key(key, mm, k)
-			if sz := seriesKeySizeV2(key, mm, k); sz > MaxKeyLength {
-				maxKeyErr = fmt.Errorf("max key length exceeded: %v > %v", sz, MaxKeyLength)
-				return false
-			}
-		}
-
-		other := pt
-		other.key = newKey
-		other.fields = fieldBuf
-		points = append(points, &other)
-
-		return true
-	}); err != nil {
-		return points, err
-	} else if maxKeyErr != nil {
-		return points, maxKeyErr
-	}
-
-	return points, nil
-}
-
-// newV2Key returns a new key by converting the old measurement & field into keys.
-func newV2Key(oldKey, mm, field []byte) []byte {
-	newKey := make([]byte, len(mm)+1+len(MeasurementTagKey)+1+len(oldKey)+1+len(FieldKeyTagKey)+1+len(field))
-	buf := newKey
-
-	copy(buf, mm)
-	buf = buf[len(mm):]
-
-	buf[0], buf[1], buf[2], buf = ',', MeasurementTagKeyBytes[0], '=', buf[3:]
-	copy(buf, oldKey)
-	buf = buf[len(oldKey):]
-
-	buf[0], buf[1], buf[2], buf = ',', FieldKeyTagKeyBytes[0], '=', buf[3:]
-	copy(buf, field)
-
-	return newKey
+	pp := newPointsParser(mm, WithParserDefaultTime(defaultTime), WithParserPrecision(precision))
+	err = pp.parsePoints(buf)
+	return pp.points, err
 }
 
 // GetPrecisionMultiplier will return a multiplier for the precision specified.
@@ -585,6 +453,18 @@ func scanKey(buf []byte, i int) (int, []byte, error) {
 		i, commas, indices, err = scanTags(buf, i, indices)
 		if err != nil {
 			return i, buf[start:i], err
+		}
+	}
+
+	// Iterate over tags keys ensure that we do not encounter any
+	// of the reserved tag keys such as _measurement or _field.
+	for j := 0; j < commas; j++ {
+		_, key := scanTo(buf[indices[j]:indices[j+1]-1], 0, '=')
+
+		for _, reserved := range reservedTagKeys {
+			if bytes.Equal(key, reserved) {
+				return i, buf[start:i], fmt.Errorf("cannot use reserved tag key %q", key)
+			}
 		}
 	}
 
@@ -1059,10 +939,6 @@ func scanNumber(buf []byte, i int) (int, error) {
 			}
 		}
 	} else if isUnsigned {
-		// Return an error if uint64 support has not been enabled.
-		if !enableUint64Support {
-			return i, ErrInvalidNumber
-		}
 		// Make sure the last char is a 'u' for unsigned
 		if buf[i-1] != 'u' {
 			return i, ErrInvalidNumber
@@ -2034,6 +1910,63 @@ func NewTags(m map[string]string) Tags {
 	return a
 }
 
+// NewTagsKeyValues returns a new Tags from a list of key, value pairs,
+// ensuring the returned result is correctly sorted. Duplicate keys are removed,
+// however, it which duplicate that remains is undefined.
+// NewTagsKeyValues will return ErrInvalidKevValuePairs if len(kvs) is not even.
+// If the input is guaranteed to be even, the error can be safely ignored.
+// If a has enough capacity, it will be reused.
+func NewTagsKeyValues(a Tags, kv ...[]byte) (Tags, error) {
+	if len(kv)%2 == 1 {
+		return nil, ErrInvalidKevValuePairs
+	}
+	if len(kv) == 0 {
+		return nil, nil
+	}
+
+	l := len(kv) / 2
+	if cap(a) < l {
+		a = make(Tags, 0, l)
+	} else {
+		a = a[:0]
+	}
+
+	for i := 0; i < len(kv)-1; i += 2 {
+		a = append(a, NewTag(kv[i], kv[i+1]))
+	}
+
+	if !a.sorted() {
+		sort.Sort(a)
+	}
+
+	// remove duplicates
+	j := 0
+	for i := 0; i < len(a)-1; i++ {
+		if !bytes.Equal(a[i].Key, a[i+1].Key) {
+			if j != i {
+				// only copy if j has deviated from i, indicating duplicates
+				a[j] = a[i]
+			}
+			j++
+		}
+	}
+
+	a[j] = a[len(a)-1]
+	j++
+
+	return a[:j], nil
+}
+
+// NewTagsKeyValuesStrings is equivalent to NewTagsKeyValues, except that
+// it will allocate new byte slices for each key, value pair.
+func NewTagsKeyValuesStrings(a Tags, kvs ...string) (Tags, error) {
+	kv := make([][]byte, len(kvs))
+	for i := range kvs {
+		kv[i] = []byte(kvs[i])
+	}
+	return NewTagsKeyValues(a, kv...)
+}
+
 // Keys returns the list of keys for a tag set.
 func (a Tags) Keys() []string {
 	if len(a) == 0 {
@@ -2098,6 +2031,34 @@ func (a Tags) Clone() Tags {
 	}
 
 	return others
+}
+
+// KeyValues returns the Tags as a list of key, value pairs,
+// maintaining the original order of a. v will be used if it has
+// capacity.
+func (a Tags) KeyValues(v [][]byte) [][]byte {
+	l := a.Len() * 2
+	if cap(v) < l {
+		v = make([][]byte, 0, l)
+	} else {
+		v = v[:l]
+	}
+	for i := range a {
+		v = append(v, a[i].Key, a[i].Value)
+	}
+	return v
+}
+
+// sorted returns true if a is sorted and is an optimization
+// to avoid an allocation when calling sort.IsSorted, improving
+// performance as much as 50%.
+func (a Tags) sorted() bool {
+	for i := len(a) - 1; i > 0; i-- {
+		if bytes.Compare(a[i].Key, a[i-1].Key) == -1 {
+			return false
+		}
+	}
+	return true
 }
 
 func (a Tags) Len() int           { return len(a) }

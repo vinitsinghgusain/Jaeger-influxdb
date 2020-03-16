@@ -1,10 +1,10 @@
 package execute
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/influxdata/flux"
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 	"github.com/influxdata/flux/memory"
 	"github.com/influxdata/flux/plan"
 	"github.com/influxdata/flux/semantic"
@@ -109,7 +109,7 @@ func (t *selectorTransformation) Finish(id DatasetID, err error) {
 func (t *selectorTransformation) setupBuilder(tbl flux.Table) (TableBuilder, int, error) {
 	builder, created := t.cache.TableBuilder(tbl.Key())
 	if !created {
-		return nil, 0, fmt.Errorf("found duplicate table with key: %v", tbl.Key())
+		return nil, 0, errors.Newf(codes.FailedPrecondition, "found duplicate table with key: %v", tbl.Key())
 	}
 	if err := AddTableCols(tbl, builder); err != nil {
 		return nil, 0, err
@@ -118,7 +118,7 @@ func (t *selectorTransformation) setupBuilder(tbl flux.Table) (TableBuilder, int
 	cols := builder.Cols()
 	valueIdx := ColIdx(t.config.Column, cols)
 	if valueIdx < 0 {
-		return nil, 0, fmt.Errorf("no column %q exists", t.config.Column)
+		return nil, 0, errors.Newf(codes.FailedPrecondition, "no column %q exists", t.config.Column)
 	}
 	return builder, valueIdx, nil
 }
@@ -132,6 +132,8 @@ func (t *indexSelectorTransformation) Process(id DatasetID, tbl flux.Table) erro
 
 	var s interface{}
 	switch valueCol.Type {
+	case flux.TTime:
+		s = t.selector.NewTimeSelector()
 	case flux.TBool:
 		s = t.selector.NewBoolSelector()
 	case flux.TInt:
@@ -143,11 +145,14 @@ func (t *indexSelectorTransformation) Process(id DatasetID, tbl flux.Table) erro
 	case flux.TString:
 		s = t.selector.NewStringSelector()
 	default:
-		return fmt.Errorf("unsupported selector type %v", valueCol.Type)
+		return errors.Newf(codes.Invalid, "unsupported selector type %v", valueCol.Type)
 	}
 
 	return tbl.Do(func(cr flux.ColReader) error {
 		switch valueCol.Type {
+		case flux.TTime:
+			selected := s.(DoTimeIndexSelector).DoTime(cr.Times(valueIdx))
+			return t.appendSelected(selected, builder, cr)
 		case flux.TBool:
 			selected := s.(DoBoolIndexSelector).DoBool(cr.Bools(valueIdx))
 			return t.appendSelected(selected, builder, cr)
@@ -164,7 +169,7 @@ func (t *indexSelectorTransformation) Process(id DatasetID, tbl flux.Table) erro
 			selected := s.(DoStringIndexSelector).DoString(cr.Strings(valueIdx))
 			return t.appendSelected(selected, builder, cr)
 		default:
-			return fmt.Errorf("unsupported selector type %v", valueCol.Type)
+			return errors.Newf(codes.Invalid, "unsupported selector type %v", valueCol.Type)
 		}
 	})
 }
@@ -179,6 +184,8 @@ func (t *rowSelectorTransformation) Process(id DatasetID, tbl flux.Table) error 
 	var rower Rower
 
 	switch valueCol.Type {
+	case flux.TTime:
+		rower = t.selector.NewTimeSelector()
 	case flux.TBool:
 		rower = t.selector.NewBoolSelector()
 	case flux.TInt:
@@ -190,18 +197,20 @@ func (t *rowSelectorTransformation) Process(id DatasetID, tbl flux.Table) error 
 	case flux.TString:
 		rower = t.selector.NewStringSelector()
 	default:
-		return fmt.Errorf("unsupported selector type %v", valueCol.Type)
+		return errors.Newf(codes.Invalid, "unsupported selector type %v", valueCol.Type)
 	}
 
 	// if rower has a nil value, this means that the row selector doesn't
 	// yet have an implementation
 
 	if rower == nil {
-		return fmt.Errorf("invalid use of function: %T has no implementation for type %v", t.selector, valueCol.Type)
+		return errors.Newf(codes.FailedPrecondition, "invalid use of function: %T has no implementation for type %v", t.selector, valueCol.Type)
 	}
 
 	if err := tbl.Do(func(cr flux.ColReader) error {
 		switch valueCol.Type {
+		case flux.TTime:
+			rower.(DoTimeRowSelector).DoTime(cr.Times(valueIdx), cr)
 		case flux.TBool:
 			rower.(DoBoolRowSelector).DoBool(cr.Bools(valueIdx), cr)
 		case flux.TInt:
@@ -213,7 +222,7 @@ func (t *rowSelectorTransformation) Process(id DatasetID, tbl flux.Table) error 
 		case flux.TString:
 			rower.(DoStringRowSelector).DoString(cr.Strings(valueIdx), cr)
 		default:
-			return fmt.Errorf("unsupported selector type %v", valueCol.Type)
+			return errors.Newf(codes.Invalid, "unsupported selector type %v", valueCol.Type)
 		}
 		return nil
 	}); err != nil {
@@ -252,11 +261,15 @@ func (t *rowSelectorTransformation) appendRows(builder TableBuilder, rows []Row)
 }
 
 type IndexSelector interface {
+	NewTimeSelector() DoTimeIndexSelector
 	NewBoolSelector() DoBoolIndexSelector
 	NewIntSelector() DoIntIndexSelector
 	NewUIntSelector() DoUIntIndexSelector
 	NewFloatSelector() DoFloatIndexSelector
 	NewStringSelector() DoStringIndexSelector
+}
+type DoTimeIndexSelector interface {
+	DoTime(*array.Int64) []int
 }
 type DoBoolIndexSelector interface {
 	DoBool(*array.Boolean) []int
@@ -275,6 +288,7 @@ type DoStringIndexSelector interface {
 }
 
 type RowSelector interface {
+	NewTimeSelector() DoTimeRowSelector
 	NewBoolSelector() DoBoolRowSelector
 	NewIntSelector() DoIntRowSelector
 	NewUIntSelector() DoUIntRowSelector
@@ -286,6 +300,10 @@ type Rower interface {
 	Rows() []Row
 }
 
+type DoTimeRowSelector interface {
+	Rower
+	DoTime(vs *array.Int64, cr flux.ColReader)
+}
 type DoBoolRowSelector interface {
 	Rower
 	DoBool(vs *array.Boolean, cr flux.ColReader)

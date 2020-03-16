@@ -24,6 +24,7 @@ const (
 	ETooManyRequests     = "too many requests"
 	EUnauthorized        = "unauthorized"
 	EMethodNotAllowed    = "method not allowed"
+	ETooLarge            = "request too large"
 )
 
 // Error is the error struct of platform.
@@ -100,29 +101,20 @@ func WithErrorOp(op string) func(*Error) {
 	}
 }
 
-// Error implement the error interface by outputing the Code and Err.
+// Error implements the error interface by writing out the recursive messages.
 func (e *Error) Error() string {
-	var b strings.Builder
-
-	// Print the current operation in our stack, if any.
-	if e.Op != "" {
-		fmt.Fprintf(&b, "%s: ", e.Op)
-	}
-
-	// If wrapping an error, print its Error() message.
-	// Otherwise print the error code & message.
-	if e.Err != nil {
-		b.WriteString(e.Err.Error())
-	} else {
-		if e.Code != "" {
-			fmt.Fprintf(&b, "<%s>", e.Code)
-			if e.Msg != "" {
-				b.WriteString(" ")
-			}
-		}
+	if e.Msg != "" && e.Err != nil {
+		var b strings.Builder
 		b.WriteString(e.Msg)
+		b.WriteString(": ")
+		b.WriteString(e.Err.Error())
+		return b.String()
+	} else if e.Msg != "" {
+		return e.Msg
+	} else if e.Err != nil {
+		return e.Err.Error()
 	}
-	return b.String()
+	return fmt.Sprintf("<%s>", e.Code)
 }
 
 // ErrorCode returns the code of the root error, if available; otherwise returns EINTERNAL.

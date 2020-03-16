@@ -2,12 +2,15 @@
 package values
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 
+	"github.com/influxdata/flux/codes"
+	"github.com/influxdata/flux/internal/errors"
 	"github.com/influxdata/flux/semantic"
-	"github.com/pkg/errors"
 )
 
 type Typer interface {
@@ -19,6 +22,7 @@ type Value interface {
 	Typer
 	IsNull() bool
 	Str() string
+	Bytes() []byte
 	Int() int64
 	UInt() uint64
 	Float() float64
@@ -53,6 +57,10 @@ func (v value) IsNull() bool {
 func (v value) Str() string {
 	CheckKind(v.t.Nature(), semantic.String)
 	return v.v.(string)
+}
+func (v value) Bytes() []byte {
+	CheckKind(v.t.Nature(), semantic.Bytes)
+	return v.v.([]byte)
 }
 func (v value) Int() int64 {
 	CheckKind(v.t.Nature(), semantic.Int)
@@ -114,6 +122,8 @@ func (v value) Equal(r Value) bool {
 		return v.Float() == r.Float()
 	case semantic.String:
 		return v.Str() == r.Str()
+	case semantic.Bytes:
+		return bytes.Equal(v.Bytes(), r.Bytes())
 	case semantic.Time:
 		return v.Time() == r.Time()
 	case semantic.Duration:
@@ -153,6 +163,8 @@ func New(v interface{}) Value {
 	switch v := v.(type) {
 	case string:
 		return NewString(v)
+	case []byte:
+		return NewBytes(v)
 	case int64:
 		return NewInt(v)
 	case uint64:
@@ -217,7 +229,7 @@ func NewFromString(t semantic.Type, s string) (Value, error) {
 		}
 
 	default:
-		return nil, errors.New("invalid type for value stringer")
+		return nil, errors.New(codes.Invalid, "invalid type for value stringer")
 	}
 	return v, nil
 }
@@ -225,6 +237,12 @@ func NewFromString(t semantic.Type, s string) (Value, error) {
 func NewString(v string) Value {
 	return value{
 		t: semantic.String,
+		v: v,
+	}
+}
+func NewBytes(v []byte) Value {
+	return value{
+		t: semantic.Bytes,
 		v: v,
 	}
 }
@@ -243,12 +261,6 @@ func NewUInt(v uint64) Value {
 func NewFloat(v float64) Value {
 	return value{
 		t: semantic.Float,
-		v: v,
-	}
-}
-func NewBool(v bool) Value {
-	return value{
-		t: semantic.Bool,
 		v: v,
 	}
 }
@@ -311,7 +323,7 @@ func AssignableTo(V, T semantic.Type) bool {
 }
 
 func UnexpectedKind(got, exp semantic.Nature) error {
-	return fmt.Errorf("unexpected kind: got %q expected %q", got, exp)
+	return errors.Newf(codes.Internal, "unexpected kind: got %q expected %q, trace: %s", got, exp, string(debug.Stack()))
 }
 
 // CheckKind panics if got != exp.

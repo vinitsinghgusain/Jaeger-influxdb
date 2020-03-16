@@ -378,7 +378,7 @@ func TablesFromCache(c execute.DataCache) (tables []*Table, err error) {
 		tables = append(tables, cb)
 		c.ExpireTable(key)
 	})
-	return tables, nil
+	return tables, err
 }
 
 func ConvertTable(tbl flux.Table) (*Table, error) {
@@ -635,6 +635,41 @@ func RunTableTests(t *testing.T, tt TableTest) {
 			}); err != nil {
 				return err
 			}
+
+			if got != want {
+				tt.t.Errorf("unexpected value for empty -got/+want\n\t- %v\n\t+ %v", got, want)
+			}
+			return nil
+		})
+		tt.finish(false)
+	})
+	tt.run(t, "EmptyAfterDo", func(tt *tableTest) {
+		// It should be ok to call empty after do and get the same result.
+		tt.do(func(tbl flux.Table) error {
+			want := tbl.Empty()
+			if err := tbl.Do(func(cr flux.ColReader) error {
+				if cr.Len() > 0 {
+					want = false
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+			got := tbl.Empty()
+
+			if got != want {
+				tt.t.Errorf("unexpected value for empty -got/+want\n\t- %v\n\t+ %v", got, want)
+			}
+			return nil
+		})
+		tt.finish(true)
+	})
+	tt.run(t, "EmptyAfterDone", func(tt *tableTest) {
+		// It should be ok to call empty after done and get the same result.
+		tt.do(func(tbl flux.Table) error {
+			want := tbl.Empty()
+			tbl.Done()
+			got := tbl.Empty()
 
 			if got != want {
 				tt.t.Errorf("unexpected value for empty -got/+want\n\t- %v\n\t+ %v", got, want)
