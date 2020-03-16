@@ -101,10 +101,10 @@ v1.tagValues(bucket:"%s", tag:"%s", predicate: (r) => r._measurement=="%s" and r
 `
 
 // GetOperations returns all operations for a specific service traced by Jaeger
-func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, error) {
+func (r *Reader) GetOperations(ctx context.Context, param spanstore.OperationQueryParameters) ([]spanstore.Operation, error) {
 	r.logger.Warn("GetOperations called")
 
-	q := fmt.Sprintf(queryGetOperationsFlux, r.bucket, common.OperationNameKey, r.spanMetaMeasurement, common.ServiceNameKey, service)
+	q := fmt.Sprintf(queryGetOperationsFlux, r.bucket, common.OperationNameKey, r.spanMetaMeasurement, common.ServiceNameKey, param.ServiceName)
 	resultIterator, err := r.query(ctx, q)
 	if err != nil {
 		if err == io.EOF {
@@ -113,12 +113,15 @@ func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, e
 		return nil, err
 	}
 
-	var operations []string
+	var operations []spanstore.Operation
 	for resultIterator.More() {
 		err = resultIterator.Next().Tables().Do(func(table flux.Table) error {
 			return table.Do(func(reader flux.ColReader) error {
 				for rowI := 0; rowI < reader.Len(); rowI++ {
-					operations = append(operations, reader.Strings(0).ValueString(rowI))
+					operations = append(operations, spanstore.Operation{
+						Name:     reader.Strings(0).ValueString(rowI),
+						SpanKind: param.SpanKind,
+					})
 				}
 				return nil
 			})
@@ -220,7 +223,7 @@ func (r *Reader) GetDependencies(endTs time.Time, lookback time.Duration) ([]mod
 
 	resultIterator, err := r.query(context.TODO(),
 		fmt.Sprintf(getDependenciesQueryFlux,
-			r.bucket, endTs.Add(-1 * lookback).UTC().Format(time.RFC3339Nano), endTs.UTC().Format(time.RFC3339Nano), r.spanMeasurement))
+			r.bucket, endTs.Add(-1*lookback).UTC().Format(time.RFC3339Nano), endTs.UTC().Format(time.RFC3339Nano), r.spanMeasurement))
 	if err != nil {
 		if err == io.EOF {
 			err = nil

@@ -34,6 +34,8 @@ func (s *FluxService) Query(ctx context.Context, w io.Writer, r *query.ProxyRequ
 		return flux.Statistics{}, err
 	}
 
+    u.Query().Add("orgID", r.Request.OrganizationID.String())
+
 	qreq, err := QueryRequestFromProxyRequest(r)
 	if err != nil {
 		return flux.Statistics{}, err

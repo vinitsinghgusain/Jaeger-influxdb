@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
-	"github.com/influxdata/influxdb1-client"
+	client "github.com/influxdata/influxdb1-client"
 	"github.com/influxdata/jaeger-influxdb/common"
 	"github.com/influxdata/jaeger-influxdb/dbmodel"
 	"github.com/jaegertracing/jaeger/model"
@@ -96,13 +96,13 @@ func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
 var queryGetOperationsInfluxQL = fmt.Sprintf(`SHOW TAG VALUES FROM "%%s" WITH KEY = "%s" WHERE "%s" = '%%s'`, common.OperationNameKey, common.ServiceNameKey)
 
 // GetOperations returns all operations for a specific service traced by Jaeger
-func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, error) {
-	response, err := r.query(ctx, fmt.Sprintf(queryGetOperationsInfluxQL, r.spanMetaMeasurement, service))
+func (r *Reader) GetOperations(ctx context.Context, param spanstore.OperationQueryParameters) ([]spanstore.Operation, error) {
+	response, err := r.query(ctx, fmt.Sprintf(queryGetOperationsInfluxQL, r.spanMetaMeasurement, param.ServiceName))
 	if err != nil {
 		return nil, err
 	}
 
-	var operations []string
+	var operations []spanstore.Operation
 	for _, result := range response.Results {
 		if result.Err != nil {
 			return nil, result.Err
@@ -116,7 +116,10 @@ func (r *Reader) GetOperations(ctx context.Context, service string) ([]string, e
 				}
 			}
 			for _, v := range row.Values {
-				operations = append(operations, v[valueColI].(string))
+				operations = append(operations, spanstore.Operation{
+					Name:     v[valueColI].(string),
+					SpanKind: param.SpanKind,
+				})
 			}
 		}
 	}
