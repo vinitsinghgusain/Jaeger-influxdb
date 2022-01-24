@@ -1,3 +1,6 @@
+**NOTICE**: This repository is archived and is no longer maintained. Please use
+https://github.com/influxdata/influxdb-observability instead.
+
 This is the repository that contains InfluxDB Storage gRPC plugin for Jaeger.
 
 > IMPORTANT: This plugin is still under development. We are using it internally
